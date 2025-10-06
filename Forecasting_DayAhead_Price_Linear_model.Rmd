@@ -1,0 +1,1381 @@
+---
+title: "CS 2024_Project 1"
+author: "Mukta Ghosh"
+date: "2024-05-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Packages and libraries:
+
+set.seed(1234)
+options(scipen = 999, digits = 4)
+install_load <- function(packages) {
+  for (package in packages) {
+    if (!require(package, character.only = TRUE)) {
+      install.packages(package)
+      library(package, character.only = TRUE)
+    }
+  }
+}
+
+packages <-c("tseries", "readr", "urca", "ggplot2","tidyverse", "rstatix", "olsrr", "ggfortify", "leaps", "lubridate", "dplyr", "forecast", "stats", "stlplus", "dynlm","zoo")
+install_load(packages)
+
+#Import all libraries for the analysis:
+library(tseries)
+library(urca)
+library(readr)
+library(stats)
+library(ggplot2)
+library(lattice)
+library(lubridate)
+library(data.table)
+library(dplyr)
+library(tidyverse)
+library(rstatix)
+library(ggplot2)
+library(olsrr)
+library(MASS)
+library(ggfortify)
+library(ggplot2)
+library(readxl)
+library(magrittr)
+library(corrplot)
+library(broom)
+library(leaps)
+library(knitr)
+library(forecast)
+library(stlplus)
+library(dynlm)
+library(zoo)
+```
+```
+```
+```{r}
+
+# Import Load Data, As uploaded in the moodle
+
+# Set data directory
+#setwd("~/Users/USER/Downloads/")
+
+# Import load data
+#Actual_Consumption <- read.csv<- read.csv2("~/C:/Users/USER/Downloads/Actual_consumption_201501010000_202404012359_Hour.csv")
+Actual_consumption_Hour<-read.csv("C:/Users/USER/Downloads/Actual_consumption_201501010000_202404012359_Hour.csv", sep=";")
+# Import temperature:
+
+tempature<- readRDS("D:/Dort data science/Case Study/Project 1/RDS Data Sets/RDS Data Sets/Temperature.rds")
+# Import Generation per type
+Aggregated_Generation_per_Type_Germany <- readRDS("D:/Dort data science/Case Study/Project 1/RDS Data Sets/RDS Data Sets/Aggregated Generation per Type Germany Processed.rds")
+
+Allocated_Transfer_Capacities <- readRDS("D:/Dort data science/Case Study/Project 1/RDS Data Sets/RDS Data Sets/Allocated Transfer Capacities.rds")
+Day_Ahead_Forecasts_Wind_Solar <- readRDS("D:/Dort data science/Case Study/Project 1/RDS Data Sets/RDS Data Sets/Day Ahead Forecasts Wind Solar Germany.rds")
+Maintenance_Schedules_by_Type <- readRDS("D:/Dort data science/Case Study/Project 1/RDS Data Sets/RDS Data Sets/Maintenance Schedules by Type.rds")
+Gas_Futures <- readRDS("D:/Dort data science/Case Study/Project 1/RDS Data Sets/RDS Data Sets/Gas Futures.rds")
+
+Temperature <- readRDS("D:/Dort data science/Case Study/Project 1/RDS Data Sets/RDS Data Sets/Temperature.rds")
+Carbon_Futures <- readRDS("D:/Dort data science/Case Study/Project 1/RDS Data Sets/RDS Data Sets/Carbon Futures.rds")
+Net_Physical_Flows <- readRDS("D:/Dort data science/Case Study/Project 1/RDS Data Sets/RDS Data Sets/Net Physical Flows.rds")
+
+```
+
+```{r}
+
+# Data cleaning and DSRT Adjustment: [Task a and b]
+
+# Name the the "Total..grid.load...MWh..Calculated.resolutions" [main load data/total load for Germany] series as "tload" [81095 observations, un-adjusted of DST and CET]
+# Formating the data:
+Actual_Consumption <- Actual_consumption_Hour
+colnames(Actual_Consumption) <- c("Start.Date", "End.Date", "Total.Load", "Residual.Load", "Hydro.Pumped.Storage")
+Actual_Consumption <- Actual_Consumption[,c("Start.Date","Total.Load")] 
+Actual_Consumption$Start.Date <- as.POSIXct(Actual_Consumption$Start.Date, format = "%b %d, %Y %I:%M %p", tz = "CET")
+
+
+# DST Adjustment:
+
+
+# Vectors for DST adjustment
+Spring_Forward <- c("2015-03-29 01:00:00", "2016-03-27 01:00:00", "2017-03-26 01:00:00", 
+                    "2018-03-25 01:00:00", "2019-03-31 01:00:00", "2020-03-29 01:00:00",
+                    "2021-03-28 01:00:00", "2022-03-27 01:00:00", "2023-03-26 01:00:00", "2024-03-31 01:00:00")
+Fall_Back <- c("2015-10-25 02:00:00", "2016-10-30 02:00:00", "2017-10-29 02:00:00",
+               "2018-10-28 02:00:00", "2019-10-27 02:00:00", "2020-10-25 02:00:00",
+               "2021-10-31 02:00:00", "2022-10-30 02:00:00", "2023-10-29 02:00:00")
+Spring_Forward_New <- c("2015-03-29 02:00:00", "2016-03-27 02:00:00", "2017-03-26 02:00:00", 
+                        "2018-03-25 02:00:00", "2019-03-31 02:00:00", "2020-03-29 02:00:00",
+                        "2021-03-28 02:00:00", "2022-03-27 02:00:00", "2023-03-26 02:00:00", "2024-03-31 02:00:00")
+
+
+# Spring adjustment
+DST_Adjustment_Spring <- rep(0)   #list
+for (k in 1:10) {
+  DST_Adjustment_Spring[k] <- which(Actual_Consumption$Start.Date==Spring_Forward[k])  #selected row which load value should be copied
+}
+
+Spring_Load <- Actual_Consumption$Total.Load[DST_Adjustment_Spring]  #load value of selected rows
+
+Spring_Adjustment <- data.frame(Spring_Forward_New, Spring_Load)  #new dataframe with Spring_Forward_New dates and load values
+colnames(Spring_Adjustment) <- c("Start.Date", "Total.Load")
+
+Actual_consumption_DST <- rbind(Actual_Consumption, Spring_Adjustment)  #The Spring_Adjustment data frame is then appended to the Actual_consumption data frame using rbind() 
+Actual_consumption_DST$Start.Date <- as.POSIXct(Actual_consumption_DST$Start.Date, origin = "1970-01-01", tz = "CET")
+
+
+# Fall adjustment
+DST_Adjustment_Fall <- cbind()
+for (k in 1:9) {
+  DST_Adjustment_Fall[k] <- max(which(Actual_Consumption$Start.Date==Fall_Back[k]))
+}
+
+Actual_consumption_DST <- Actual_consumption_DST[-DST_Adjustment_Fall, ]
+rownames(Actual_consumption_DST) <- 1:nrow(Actual_consumption_DST)
+Actual_consumption_DST <- Actual_consumption_DST %>%arrange(Start.Date)
+
+
+```
+
+```{r}
+# Naming and renaming for convenience and add some dummies:
+
+# Rename the Actual_Consumption_DST as "load" and Total.Load vector as tload
+# Change the vector tload as numeric
+
+load<- Actual_consumption_DST[,c("Start.Date","Total.Load")] 
+names(load)[names(load) %in% c("Start.Date","Total.Load")] <- c("date", "tload")
+load$tload<- as.numeric(gsub(",", "", load$tload))
+
+# Add a series (just sequences)
+load$sl<- seq(length(load$tload))
+
+```
+
+```{r}
+# Data preparation [Task a and b]
+
+date <- as.POSIXct(load$date, format="%Y-%m-%d %H:%M:%S")
+lload <-load
+# One last thing about data preparation of the main point of interest (load) we need to separate the sample into at least two parts. As we need forecasting performance we are going to split the data frame into two separate sections. Training(l means learn) and test(f means forecast) data set.
+# We set arbitrary split date of [2021-12-31 23:00:00]
+
+# Define the date range
+#split_date <- as.POSIXct("2021-12-31 23:00:00")
+
+# Split the data frame
+#lload <- load %>% filter(date <= split_date)
+#fload <- load %>% filter(date > split_date)
+
+```
+
+
+```{r}
+# Housekeeping first: Check the dynamics of the data [Task - c]
+
+# Lets fit a trend and check residuals: [Also would initially work as a benchmark model]
+
+m1_trend <- lm(tload ~ sl, data = lload)
+tload_trend<- predict(m1_trend)
+
+# Summary of m1_trend
+summary(m1_trend)
+aic_m1_trend<- AIC(m1_trend)
+bic_m1_trend<- BIC(m1_trend)
+sqrm1_trend<- m1_trend$residuals^2
+se_m1_trend<-  sum(sqrm1_trend)/m1_trend$df.residual
+
+# Print and check the evaluation metrics:
+cat("TSE",        se_m1_trend^(1/2), "\n")
+cat("TVar",       se_m1_trend, "\n")
+cat("AIC:T",      aic_m1_trend, "\n")
+cat("BIC:T",      bic_m1_trend, "\n")
+
+par(mfrow = c(2, 3))
+
+# Plot the series and add a trend line
+plot(lload$date, lload$tload, main = "Total load with p1 trend", ylab="MW", xlab= "Date", type="l")
+lines(lload$date, tload_trend, col="red", lwd=2)
+
+# Plot residuals for the trend line regression:
+plot(lload$date, resid(m1_trend), main = "Res.& res. mean level", ylab="MW", xlab= "Date",type="l")
+mean_resid_m1_trend<- mean(resid(m1_trend))
+abline(h=mean_resid_m1_trend, col = "purple", lwd = 2)
+
+# Plot acf and PACF:
+acf(lload$tload, main = "acf of Total Load", ylab="acf", xlab= "Lags", lag.max = 400)
+pacf(lload$tload, main = "pacf of Total Load", ylab="pacf", xlab= "Lags", lag.max = 400)
+
+# Histogram and qq plot:
+hist(lload$tload, main = "Histogram total load", ylab="frequencies", xlab= "Load in MW",)
+qqnorm(lload$tload, main="Q-Q total load", pch=10, col="blue")
+qqline(lload$tload, col="red", lwd=2, lty=2)  
+
+```
+
+
+
+```{r}
+#AR model specification [Task d]: 
+#Simulation over one year data 
+# Specify the lag matrix to run simulation for best AIC/BIC given the sample. Due to large data set and limited processing power of my computer I had to reduced to limited number of AR lags and only a full cycle year. As the all the combinations are matched by the computer, for a full sample search and a more detailed lag specification would give us the best fit.
+
+# Create simulation data-frame:
+
+sampleload<- load$tload[1417:10200] # March 15-Feb 16 (1 year data of full yearly cycle) (2015-03-01 00:00:00 to 2016-02-29 23:00:00)
+
+# Specify potential lag structures and cerate lag matrix:
+
+dflagmatrix<- data.frame(sampleload)
+
+hlag1<- c(load$tload[1416:10199])
+hlag2<- c(load$tload[1415:10198])
+hlag3<- c(load$tload[1414:10197])
+dlag1<- c(load$tload[1393:10176])
+dlag3<- c(load$tload[1345:10128])
+dlag5<- c(load$tload[1297:10080])
+dlag6<- c(load$tload[1273:10056])
+wlag1<- c(load$tload[1249:10032]) #168
+wlag2<- c(load$tload[1081:9864]) #336
+d1_hlag1<- c(load$tload[1392:10175]) #25lag
+d1_hlag2<- c(load$tload[1391:10174]) #26lag
+d5_hlag1<- c(load$tload[1296:10079]) #121 lag
+d6_hlag1<- c(load$tload[1272:10055]) #145
+w1_hlag1<- c(load$tload[1248:10031]) #169
+w1_hlag2<- c(load$tload[1247:10030])# 170
+d1_hfwd1<-c(load$tload[1394:10177]) #23
+w1_hfwd1<- c(load$tload[1250:10033]) #167
+dflagmatrix$hourlag1<- hlag1
+dflagmatrix$hourlag2<- hlag2
+dflagmatrix$hourlag3<- hlag3
+dflagmatrix$daylag1<- dlag1
+dflagmatrix$daylag6<- dlag6
+dflagmatrix$weeklag1<-wlag1
+dflagmatrix$weeklag2<-wlag2
+dflagmatrix$day1_hlag1<- d1_hlag1
+dflagmatrix$day1_hlag2<- d1_hlag2
+dflagmatrix$day1_hfwd1<- d1_hfwd1
+dflagmatrix$week1_hlag1<-w1_hlag1
+dflagmatrix$week1_hlag2<-w1_hlag2
+dflagmatrix$week1_hfwd1<- w1_hfwd1
+
+```
+```
+```
+```{r}
+
+# Algorithm to find AR model specification based on Information criteria (AIC/BIC). 
+
+get_combinations <- function(vars) {
+  n <- length(vars)
+  combs <- unlist(lapply(1:n, function(x) combn(vars, x, simplify = FALSE)), recursive = FALSE)
+  return(combs)
+}
+
+find_all_models <- function(response, data) {
+  vars <- colnames(data)[!colnames(data) %in% response]
+  combinations <- get_combinations(vars)
+  
+  model_list <- list()
+  
+  for (comb in combinations) {
+    formula <- as.formula(paste(response, "~", paste(comb, collapse = "+")))
+    model <- lm(formula, data = data)
+    
+    aic <- AIC(model)
+    bic <- BIC(model)
+    
+    model_list[[length(model_list) + 1]] <- list(formula = formula, model = model, aic = aic, bic = bic)
+  }
+  
+  ordered_by_aic <- model_list[order(sapply(model_list, function(x) x$aic))]
+  ordered_by_bic <- model_list[order(sapply(model_list, function(x) x$bic))]
+  top_10_aic <- ordered_by_aic[1:min(10, length(ordered_by_aic))]
+  top_10_bic <- ordered_by_bic[1:min(10, length(ordered_by_bic))]
+  return(list(top_10_aic = top_10_aic, top_10_bic = top_10_bic))
+}
+
+data <- dflagmatrix
+response <- "sampleload"
+
+all_models <- find_all_models(response, data)
+
+# Print top 10 models ordered by AIC
+cat("Top 10 Models ordered by AIC:\n")
+for (i in 1:length(all_models$top_10_aic)) {
+  cat("Model", i, ":", as.character(all_models$top_10_aic[[i]]$formula), "\n")
+  cat("AIC:", all_models$top_10_aic[[i]]$aic, "\n\n")
+}
+
+
+
+```
+
+
+```{r}
+
+# Run over the total sample obtained over the 1 year sample Marc 2015- February 2016:
+
+# AIC-ranked model specification over full sample (full sample provided Jan 2015- April 2024):  [Task e]
+
+#Model 1 : ~ sampleload hourlag1 + hourlag2 + hourlag3 + daylag1 + daylag6 + weeklag1 + weeklag2 + day1_hlag1 + day1_hlag2 + day1_hfwd1 + week1_hlag1 + week1_hlag2 + week1_hfwd1 
+ 
+smod1<- lm(load$tload~ lag(load$tload,1)+ lag(load$tload, 2)+ lag(load$tload, 3) + lag(load$tload, 24)+ lag(load$tload, 144) + lag(load$tload, 168) + lag(load$tload, 336) + lag(load$tload,25) +lag(load$tload,26)+ lag(load$tload, 23) + lag(load$tload, 169)+lag(load$tload, 170)++lag(load$tload, 167))
+
+
+smod2<- lm(load$tload~ lag(load$tload,1)+ lag(load$tload, 2)+ lag(load$tload, 3) + lag(load$tload, 24)+ lag(load$tload, 168) + lag(load$tload, 336) + lag(load$tload,23) + lag(load$tload, 22) + lag(load$tload, 25)+ lag(load$tload, 167)+lag(load$tload, 166)++lag(load$tload, 169))
+
+smod3<- lm(load$tload~ lag(load$tload,1)+ lag(load$tload, 2)+ lag(load$tload, 3) + lag(load$tload, 24)+ lag(load$tload, 144) + lag(load$tload, 168) + lag(load$tload,23) + lag(load$tload, 22) + lag(load$tload, 25)+ lag(load$tload, 167)+lag(load$tload, 166)++lag(load$tload, 169))
+
+smod4<- lm(load$tload~ lag(load$tload,1)+ lag(load$tload, 2)+ lag(load$tload, 3) + lag(load$tload, 24)+ lag(load$tload, 168) + lag(load$tload, 23) + lag(load$tload,22) + lag(load$tload, 25) + lag(load$tload, 167)+ lag(load$tload, 166)+lag(load$tload, 169))
+
+smod5<- lm(load$tload~ lag(load$tload,1)+ lag(load$tload, 2)+ lag(load$tload, 24) + lag(load$tload, 144)+ lag(load$tload, 168) + lag(load$tload, 336) + lag(load$tload,23) + lag(load$tload, 166) +lag(load$tload, 169))
+
+smod6<- lm(load$tload~ lag(load$tload,1)+ lag(load$tload, 2)+ lag(load$tload, 168) + lag(load$tload, 144)+ lag(load$tload, 168) + lag(load$tload, 336) + lag(load$tload,23) + lag(load$tload, 22) + lag(load$tload, 25)+ lag(load$tload, 167)+lag(load$tload, 166)++lag(load$tload, 169))
+
+smod7<- lm(load$tload~ lag(load$tload,1)+ lag(load$tload, 2)+ lag(load$tload, 24) + lag(load$tload, 168)+ lag(load$tload, 23) + lag(load$tload, 22) + lag(load$tload, 25) + lag(load$tload, 169) + lag(load$tload, 166)+ lag(load$tload, 169))
+
+smod8<- lm(load$tload~ lag(load$tload,1)+ lag(load$tload, 2)+ lag(load$tload, 24) + lag(load$tload, 144)+ lag(load$tload, 168) + lag(load$tload, 23) + lag(load$tload, 22) + lag(load$tload, 25) + lag(load$tload, 167)+ lag(load$tload, 166)+ lag(load$tload, 169))
+
+smod9<- lm(load$tload~ lag(load$tload,1)+ lag(load$tload, 2)+ lag(load$tload, 3)+ lag(load$tload, 24) + lag(load$tload, 144)+ lag(load$tload, 168) + lag(load$tload, 336) + lag(load$tload, 23) + lag(load$tload, 22) + lag(load$tload, 167)+ lag(load$tload, 166)+ lag(load$tload, 169))
+
+smod10<- lm(load$tload~ lag(load$tload,1)+ lag(load$tload, 2)+ lag(load$tload, 3)+ lag(load$tload, 24) + lag(load$tload, 144)+ lag(load$tload, 168) + lag(load$tload, 23) + lag(load$tload, 22) + lag(load$tload, 167) + lag(load$tload, 166)+ lag(load$tload, 169))
+
+
+# Summarize the AIC/BIC
+
+aic_smodel1<- AIC(smod1)
+aic_smodel2<- AIC(smod2)
+aic_smodel3<- AIC(smod3)
+aic_smodel4<- AIC(smod4)
+aic_smodel5<- AIC(smod5)
+aic_smodel6<- AIC(smod6)
+aic_smodel7<- AIC(smod7)
+aic_smodel8<- AIC(smod8)
+aic_smodel9<- AIC(smod9)
+aic_smodel10<- AIC(smod10)
+
+
+
+# Create result vector
+
+AICresults<- c(aic_smodel1, aic_smodel2,aic_smodel3,aic_smodel4,aic_smodel5,aic_smodel6,aic_smodel7,aic_smodel8,aic_smodel9,aic_smodel10)
+
+
+
+# Get Residual Sum of errors of the model:
+smod1summary<- summary(smod1)
+smod2summary<- summary(smod2)
+smod3summary<- summary(smod3)
+smod4summary<- summary(smod4)
+smod5summary<- summary(smod5)
+smod6summary<- summary(smod6)
+smod7summary<- summary(smod7)
+smod8summary<- summary(smod8)
+smod9summary<- summary(smod9)
+smod10summary<- summary(smod10)
+
+RSEsmod1 <- smod1summary$sigma
+RSEsmod2 <- smod2summary$sigma
+RSEsmod3 <- smod3summary$sigma
+RSEsmod4 <- smod4summary$sigma
+RSEsmod5 <- smod5summary$sigma
+RSEsmod6 <- smod6summary$sigma
+RSEsmod7 <- smod7summary$sigma
+RSEsmod8 <- smod8summary$sigma
+RSEsmod9 <- smod9summary$sigma
+RSEsmod10 <- smod10summary$sigma
+
+
+insampleMSE<- c(RSEsmod1,RSEsmod2,RSEsmod3,RSEsmod4,RSEsmod5,RSEsmod6,RSEsmod7,RSEsmod8,RSEsmod9,RSEsmod10)
+
+
+par(mfrow=c(1,3))
+
+# Some visualization and choosing the best model:
+
+plot(seq(1:10), AICresults, type = "b", pch = 19,
+     xlab = "Model Serial", ylab = "AIC",
+     main = "AIC of AR Modesl")
+min_aic <- which.min(AICresults)
+points(min_aic, AICresults[min_aic], col = "red", pch = 19, cex = 1.5)
+abline(v = min_aic, col = "red", lty = 2)
+
+
+plot(seq(1:10), insampleMSE, type = "b", pch = 19,
+     xlab = "Model Serial", ylab = "MSE in",
+     main = "Insample MSE")
+min_MSE <- which.min(insampleMSE)
+points(min_MSE, insampleMSE[min_MSE], col = "red", pch = 19, cex = 1.5)
+abline(v = min_MSE, col = "red", lty = 2)
+
+
+```
+
+
+
+
+
+```{r}
+# Model Selection problem [Task 3] and plotging :
+
+# Based on the 10 possible simulated model Model 1 and 2 being very close we choose the model 1 for its consistency [Lowest AIC/BIC and satisfactory Residual standard error: 637] over all the benchmarks. So the selected AR model is as follows,
+
+#smod1<- lm(load$tload~ lag(load$tload,1)+ lag(load$tload, 2)+ lag(load$tload, 3) + lag(load$tload, 24)+ lag(load$tload, 144) + lag(load$tload, 168) + lag(load$tload, 336) + lag(load$tload,25) +lag(load$tload,26)+ lag(load$tload, 23) + lag(load$tload, 169)+lag(load$tload, 170)++lag(load$tload, 167))
+
+# Summary of model 1:
+summary(smod1)
+
+# Plotting the forecast and Mean Sample Forecasting Error (MSFE): [Task e, forcasting AR model and]
+
+fsmod1<- smod1$coefficients[1]+smod1$coefficients[2]*lag(load$tload,1)++smod1$coefficients[3]*lag(load$tload,2)+smod1$coefficients[4]*lag(load$tload,3)+smod1$coefficients[5]*lag(load$tload,24)+smod1$coefficients[6]*lag(load$tload,144)+smod1$coefficients[7]*lag(load$tload,168)+smod1$coefficients[8]*lag(load$tload,336)+smod1$coefficients[9]*lag(load$tload,25)+smod1$coefficients[10]*lag(load$tload,26)+smod1$coefficients[11]*lag(load$tload,23)+smod1$coefficients[12]*lag(load$tload,169)+smod1$coefficients[13]*lag(load$tload,170)++smod1$coefficients[14]*lag(load$tload,167)
+
+
+n_smod1 <- length(fsmod1)-336
+rsmod1<- load$tload[337:81096]-fsmod1[337:81096] # 336 observation lost during forecasting due to max period 336
+rss_smod1 <- sum(rsmod1^2)
+msfe_mod1 <- (rss_smod1/n_smod1)^(1/2)
+aic_smod1<- AIC(smod1)
+bic_smod1<- BIC(smod1)
+sqrsm1<- smod1$residuals^2   #squared error
+sesm1<-  sum(sqrsm1)/80760
+
+
+forecasts <- smod1$fitted.values[!is.na(smod1$fitted.values)]
+errors <- smod1$residuals[!is.na(smod1$residuals)]
+msfe_AR <- sqrt(mean(errors^2))
+
+
+# Print and check the evaluation metrics:
+cat("MSTE",        sesm1^(1/2), "\n")
+cat("MSFE",      msfe_AR, "\n")
+cat("TVar",       sesm1, "\n")
+cat("AIC:T",     aic_smod1, "\n")
+cat("BIC:T",      bic_smod1, "\n")
+
+
+#Add model fit to training and forecasting data set
+smod1zv<- rep(0, 336)
+smod1fit<- smod1$fitted.values
+load$smod1_samplefit<-  c(smod1zv, smod1fit[1:80760])
+load$smod1_forecast<- c(smod1zv, fsmod1[337:81096])
+load$smod1_forecasterror<- c(smod1zv, rsmod1)
+
+
+
+#All in sample Forecasting error vs Actual:
+
+plot(load$date[337:80760], load$smod1_forecast[337:80760], main="Forcast/Actual Final AR Model", xlab="date", ylab="MW", type="l", col="orange", lwd=.2)
+lines(load$date[337:80760], load$tload[337:80760], col="blue", lwd=.15)
+legend("topright" , legend = c("For.Load", "AL"), col = c("orange", "blue"),cex =.3, lty=1, lwd = .12) 
+
+par(mfrow=c(2,2))
+
+# Some more visualizations:
+
+#acf(smod1$residuals, main = "acf Final AR insample FE", ylab="acf", xlab= "Lags", lag.max = 600, lwd=1, col="blue")
+#pacf(smod1$residuals, main = "pacf Final AR insample FE) FE", ylab="pacf", xlab= "Lags", lag.max = 600, lwd=1, col="blue")
+
+plot(load$date[337:80760], load$smod1_forecast[337:80760], main="Forcast/Actual Final AR Model", xlab="date", ylab="MW", type="l", col="orange", lwd=.05)
+lines(load$date[337:80760], load$tload[337:80760], col="blue", lwd=.035)
+legend("topright" , legend = c("For.L", "AL"), col = c("orange", "blue"),cex =.3, lty=1, lwd = 1) 
+
+plot(load$date[337:80760], load$smod1_forecasterror[337:80760], main="Final AR insample F Error", xlab="date", ylab="MW", type="l", col="red", lwd=.1)
+
+
+# Plot the actual load
+plot(load$tload[337:80760], type = "p", col = "black", pch = 19,main = "Actual Load vs. Forecast", xlab = "Time", ylab = "Load")
+
+# Add the forecasted values to the plot
+points(load$smod1_forecast[337:80760], col = "red", pch = 19)
+
+# Add legend
+legend("topright", legend = c("Actual Load", "Forecast"), col = c("black", "red"), pch = 19)
+
+```
+
+
+
+```{r}
+
+# Function to calculate the length of consecutive NA values
+NA_checking_per_columns <- function(x) {
+  na_count <- 0
+  max_na_length <- 0
+  for (val in x) {
+    if (is.na(val)) {
+      na_count <- na_count + 1
+    } else {
+      max_na_length <- max(max_na_length, na_count)
+      na_count <- 0
+    }
+  }
+  return(max_na_length)
+}
+NA_checking_per_columns <- function(x) {
+  # Initialize an empty vector to store the count of missing values per column
+  missing_counts <- numeric(length(x))
+  
+  # Loop over each column in the x frame
+  for (i in seq_along(x)) {
+    # Count the number of missing values in the current column
+    missing_counts[i] <- sum(is.na(x[[i]]))
+  }
+  
+  # Create a named vector with column names as names and missing value counts as values
+  names(missing_counts) <- colnames(x)
+  
+  # Return the vector containing missing value counts per column
+  return(missing_counts)
+}
+
+
+```
+```{r}
+#Generation_per_type group x function
+# Define a function to group columns by type and calculate row-wise sums
+group_columns_by_type <- function(x) {
+  # Extract the Start.Date column
+  start_date <- x$Start.Date
+  
+  # Define the types
+  types <- c("Fossil", "Hydro", "Other", "Solar", "Waste", "Wind")
+  
+  # Initialize a list to store the row-wise sums for each type
+  type_sums <- list()
+  
+  # Loop through each type
+  for (type in types) {
+    # Find columns containing the type in their names
+    type_columns <- grep(paste0("^output_", type), colnames(x), value = TRUE)
+    
+    # Subset the x frame using the selected columns
+    selected_x <- x[, c("Start.Date", type_columns)]
+    
+    # Calculate row-wise sums
+    type_sum <- rowSums(selected_x[, -1], na.rm = TRUE)
+    
+    # Store the result in the list
+    type_sums[[type]] <- type_sum
+  }
+  
+  # Convert the list to a dataframe
+  type_sums_df <- data.frame(Start.Date = start_date, type_sums)
+  
+  # Return the dataframe with row-wise sums for each type
+  return(type_sums_df)
+}
+
+```
+
+
+```{r}
+#REname the column names
+ActualTotalLoad_Germany_Aggregated <- subset(load, select = c("date", "tload"))
+colnames(ActualTotalLoad_Germany_Aggregated)[colnames(ActualTotalLoad_Germany_Aggregated) == "date"] <- "Start.Date"
+colnames(ActualTotalLoad_Germany_Aggregated)[colnames(ActualTotalLoad_Germany_Aggregated) == "tload"] <- "Total.Load"
+```
+
+```{r}
+#model_1
+#smod1<- lm(load$tload~ lag(load$tload,1)+ lag(load$tload, 2)+ lag(load$tload, 3) + lag(load$tload, 24)+ lag(load$tload, 144) + lag(load$tload, 168) + lag(load$tload, 336) + lag(load$tload,25) +lag(load$tload,26)+ lag(load$tload, 23) + lag(load$tload, 169)+lag(load$tload, 170)++lag(load$tload, 167))    [Base AR model]
+library(zoo)
+Temperature <- readRDS("D:/Dort data science/Case Study/Project 1/RDS Data Sets/RDS Data Sets/Temperature.rds")
+colnames(Temperature)[colnames(Temperature) == "time"] <- "Start.Date"
+merged_df <- merge(Temperature, ActualTotalLoad_Germany_Aggregated, by = "Start.Date", all = TRUE)
+
+merged_df$temp <- na.locf(merged_df$temp, na.rm = FALSE)
+missing <- NA_checking_per_columns(merged_df)
+print(missing)
+# Create lagged temperature
+merged_df$temp <- dplyr::lag(merged_df$temp, 1)
+
+lagged_temp_values <- unlist(merged_df$temp)  #temp column data type was as list.
+lagged_temp_numeric <- as.numeric(lagged_temp_values)
+
+#difference in length between the original "temp" column and the lagged numeric vector to calculating NA.
+length_diff <-  length(merged_df$temp) - length(lagged_temp_numeric)    
+lagged_temp_numeric <- c(lagged_temp_numeric, rep(NA, length_diff))
+merged_df$temp <- lagged_temp_numeric
+
+lagged_data <- merged_df
+lagged_data<- na.omit(lagged_data)
+# Lag load data
+lagged_data$Total_load_lag1 <- dplyr::lag(lagged_data$Total.Load, 1)
+lagged_data$Total_load_lag2 <- dplyr::lag(lagged_data$Total.Load, 2)
+lagged_data$Total_load_lag3 <- dplyr::lag(lagged_data$Total.Load, 3)
+lagged_data$Total_load_lag24 <- dplyr::lag(lagged_data$Total.Load, 24)
+lagged_data$Total_load_lag144 <- dplyr::lag(lagged_data$Total.Load, 144)
+lagged_data$Total_load_lag168 <- dplyr::lag(lagged_data$Total.Load, 168)
+lagged_data$Total_load_lag336 <- dplyr::lag(lagged_data$Total.Load, 336)
+lagged_data$Total_load_lag25 <- dplyr::lag(lagged_data$Total.Load, 25)
+lagged_data$Total_load_lag26 <- dplyr::lag(lagged_data$Total.Load, 26)
+lagged_data$Total_load_lag23 <- dplyr::lag(lagged_data$Total.Load, 23)
+lagged_data$Total_load_lag169 <- dplyr::lag(lagged_data$Total.Load, 169)
+lagged_data$Total_load_lag170 <- dplyr::lag(lagged_data$Total.Load, 170)
+lagged_data$Total_load_lag167 <- dplyr::lag(lagged_data$Total.Load, 167)
+#lagged_data <- na.omit(lagged_data)
+# Fit linear regression model
+lm_model1 <- lm(Total.Load ~ Total_load_lag1 + Total_load_lag2 + Total_load_lag3 +
+                  Total_load_lag24 + Total_load_lag144 + Total_load_lag168 +
+                  Total_load_lag336 + Total_load_lag25 +Total_load_lag26+ Total_load_lag23 +
+                  Total_load_lag169 +Total_load_lag170 + Total_load_lag167 +temp, data = lagged_data)
+summary(lm_model1)
+
+
+#predicted_load1 <- predict(lm_model1, newdata = lagged_data)
+
+
+
+forecasts <- lm_model1$fitted.values[!is.na(lm_model1$fitted.values)]
+errors <- lm_model1$residuals[!is.na(lm_model1$residuals)]
+msfe_temp <- sqrt(mean(errors^2))
+
+
+cat("MSFE temperature",        msfe_temp, "\n")
+                  
+```
+
+
+
+
+```{r}
+#Model 2 (Generation per type, Aggregate all type of generation groupwise)
+
+Aggregated_Generation_per_Type_Germany <- readRDS("D:/Dort data science/Case Study/Project 1/RDS Data Sets/RDS Data Sets/Aggregated Generation per Type Germany Processed.rds")
+colnames(Aggregated_Generation_per_Type_Germany)[colnames(Aggregated_Generation_per_Type_Germany) == "time"] <- "Start.Date"
+# Select columns starting with "output_" excluding "Start.Date"
+output_columns <- grep("^output_", colnames(Aggregated_Generation_per_Type_Germany)[-1], value = TRUE)
+output_columns <- c("Start.Date", output_columns)  # Add Start.Date back
+# Subset the data frame with selected columns
+Aggregated_Generation_per_Type_Germany <- Aggregated_Generation_per_Type_Germany[, output_columns]
+
+
+type_sums_df <- group_columns_by_type(Aggregated_Generation_per_Type_Germany)  #function call from all_function.R file
+merged_data2 <- merge(type_sums_df, ActualTotalLoad_Germany_Aggregated, by = "Start.Date", all = TRUE)
+merged_data2 <- na.omit(merged_data2)
+# Remove columns where all values are either 0 or NA or both
+merged_data2 <- merged_data2[, colSums(merged_data2 != 0 & !is.na(merged_data2), na.rm = TRUE) > 0]
+
+
+
+merged_data2 <- as.data.frame(merged_data2)
+lagged_data <- merged_data2
+# Lag all columns except the first(Start.Date) and last one(Total.Load)
+lagged_data[, -c(1, ncol(lagged_data))] <- lapply(lagged_data[, -c(1, ncol(lagged_data))], function(x) dplyr::lag(x, 1))
+
+lagged_data$Total_load_lag1 <- dplyr::lag(lagged_data$Total.Load, 1)
+lagged_data$Total_load_lag2 <- dplyr::lag(lagged_data$Total.Load, 2)
+lagged_data$Total_load_lag3 <- dplyr::lag(lagged_data$Total.Load, 3)
+lagged_data$Total_load_lag24 <- dplyr::lag(lagged_data$Total.Load, 24)
+lagged_data$Total_load_lag144 <- dplyr::lag(lagged_data$Total.Load, 144)
+lagged_data$Total_load_lag168 <- dplyr::lag(lagged_data$Total.Load, 168)
+lagged_data$Total_load_lag336 <- dplyr::lag(lagged_data$Total.Load, 336)
+lagged_data$Total_load_lag25 <- dplyr::lag(lagged_data$Total.Load, 25)
+lagged_data$Total_load_lag26 <- dplyr::lag(lagged_data$Total.Load, 26)
+lagged_data$Total_load_lag23 <- dplyr::lag(lagged_data$Total.Load, 23)
+lagged_data$Total_load_lag169 <- dplyr::lag(lagged_data$Total.Load, 169)
+lagged_data$Total_load_lag170 <- dplyr::lag(lagged_data$Total.Load, 170)
+lagged_data$Total_load_lag167 <- dplyr::lag(lagged_data$Total.Load, 167)
+#lagged_data <- na.omit(lagged_data)
+# Fit linear regression model
+lm_model2 <- lm(Total.Load ~ Total_load_lag1 + Total_load_lag2 + Total_load_lag3 +
+                  Total_load_lag24 + Total_load_lag144 + Total_load_lag168 +
+                  Total_load_lag336 + Total_load_lag25 +Total_load_lag26+ Total_load_lag23 +
+                  Total_load_lag169 +Total_load_lag170 + Total_load_lag167 +
+                  lagged_data$Fossil+
+                  lagged_data$Hydro+
+                  lagged_data$Other+
+                  lagged_data$Solar+
+                  lagged_data$Waste+
+                  lagged_data$Wind
+                , data = lagged_data)
+
+
+
+forecasts <- lm_model2$fitted.values[!is.na(lm_model2$fitted.values)]
+errors <- lm_model2$residuals[!is.na(lm_model2$residuals)]
+msfe_gene_type <- sqrt(mean(errors^2))
+
+
+cat("MSFE generation type",        msfe_gene_type, "\n")
+
+```
+
+```{r}
+#model_3 (Maintanence achequal, aggregate by available and install capacity type)
+```
+
+
+```{r}
+Maintenance_Schedules_by_Type <- readRDS("D:/Dort data science/Case Study/Project 1/RDS Data Sets/RDS Data Sets/Maintenance Schedules by Type.rds")
+colnames(Maintenance_Schedules_by_Type)[colnames(Maintenance_Schedules_by_Type) == "time"] <- "Start.Date"
+main2 <- Maintenance_Schedules_by_Type %>% replace_na(list(fossilbrowncoal_availC = 0, fossilbrowncoal_installC = 0,                                                       fossilcoalgas_availC = 0, fossilcoalgas_installC = 0, fossilgas_availC = 0,                                                    fossilgas_installC = 0, fossilhardcoal_availC = 0, fossilhardcoal_installC = 0,                                                fossiloil_availC = 0, fossiloil_installC = 0, hydropumped_availC = 0,                                                          hydropumped_installC = 0, hydroreservoir_availC = 0, hydroreservoir_installC = 0,                                              hydropoundage_availC = 0, hydropoundage_installC = 0, nuclear_availC = 0,                                                       nuclear_installC = 0, waste_availC =0, waste_installC = 0)) %>%
+   mutate(available = fossilbrowncoal_availC + fossilcoalgas_availC + fossilgas_availC + fossilhardcoal_availC + fossiloil_availC +  hydropumped_availC + hydroreservoir_availC + hydropoundage_availC + nuclear_availC + waste_availC,
+         installed = fossilbrowncoal_installC + fossilcoalgas_installC + fossilgas_installC + fossilhardcoal_installC + fossiloil_installC +  hydropumped_installC + hydroreservoir_installC + hydropoundage_installC + nuclear_installC + waste_installC, .keep="unused")
+Maintenance_Schedules_by_Type<-main2
+merged_data3 <- merge(Maintenance_Schedules_by_Type, ActualTotalLoad_Germany_Aggregated, by = "Start.Date", all = TRUE)
+merged_data3 <- as.data.frame(merged_data3)
+
+merged_data3 <-na.omit(merged_data3)
+# Remove columns where all values are either 0 or NA or both
+merged_data3 <- merged_data3[, colSums(merged_data3 != 0 & !is.na(merged_data3), na.rm = TRUE) > 0]
+
+
+# Load the function file
+
+missing <- NA_checking_per_columns(merged_data3)
+print(missing)
+
+# Fill NA values with the last non-NA value for selected columns
+merged_data3 <- na.locf(merged_data3, na.rm = FALSE)
+missing <- NA_checking_per_columns(merged_data3)
+print(missing)
+
+
+#Replace rest of the rows which have NA value with 0 (that exceptional happing for few columns which have no data from the very first)
+# Replace NA values with 0
+merged_data3 <- replace(merged_data3, is.na(merged_data3), 0)
+missing <- NA_checking_per_columns(merged_data3)
+print(missing)
+merged_data3 <- as.data.frame(merged_data3)
+
+
+#Lag all columns except the first 
+lagged_data <- merged_data3
+# Lag all columns except the first(Start.Date) and last one(Total.Load)
+lagged_data[, -c(1, ncol(lagged_data))] <- lapply(lagged_data[, -c(1, ncol(lagged_data))], function(x) dplyr::lag(x, 1))
+
+merged_data3 <-na.omit(merged_data3)
+
+# Fit linear model with lagged predictor but not lagged response
+lagged_data$Total_load_lag1 <- dplyr::lag(lagged_data$Total.Load, 1)
+lagged_data$Total_load_lag2 <- dplyr::lag(lagged_data$Total.Load, 2)
+lagged_data$Total_load_lag3 <- dplyr::lag(lagged_data$Total.Load, 3)
+lagged_data$Total_load_lag24 <- dplyr::lag(lagged_data$Total.Load, 24)
+lagged_data$Total_load_lag144 <- dplyr::lag(lagged_data$Total.Load, 144)
+lagged_data$Total_load_lag168 <- dplyr::lag(lagged_data$Total.Load, 168)
+lagged_data$Total_load_lag336 <- dplyr::lag(lagged_data$Total.Load, 336)
+lagged_data$Total_load_lag25 <- dplyr::lag(lagged_data$Total.Load, 25)
+lagged_data$Total_load_lag26 <- dplyr::lag(lagged_data$Total.Load, 26)
+lagged_data$Total_load_lag23 <- dplyr::lag(lagged_data$Total.Load, 23)
+lagged_data$Total_load_lag169 <- dplyr::lag(lagged_data$Total.Load, 169)
+lagged_data$Total_load_lag170 <- dplyr::lag(lagged_data$Total.Load, 170)
+lagged_data$Total_load_lag167 <- dplyr::lag(lagged_data$Total.Load, 167)
+#lagged_data <- na.omit(lagged_data)
+# Fit linear regression model
+lm_model3 <- lm(Total.Load ~ Total_load_lag1 + Total_load_lag2 + Total_load_lag3 +
+                  Total_load_lag24 + Total_load_lag144 + Total_load_lag168 +
+                  Total_load_lag336 + Total_load_lag25 +Total_load_lag26+ Total_load_lag23 +
+                  Total_load_lag169 +Total_load_lag170 + Total_load_lag167+
+                  lagged_data$available+
+                  lagged_data$installed , data = lagged_data)
+
+
+
+forecasts <- lm_model3$fitted.values[!is.na(lm_model3$fitted.values)]
+errors <- lm_model3$residuals[!is.na(lm_model3$residuals)]
+msfe_maintanence <- sqrt(mean(errors^2))
+
+
+cat("MSFE maintanence",        msfe_maintanence, "\n")
+```
+
+```{r}
+#Model 4
+#Model Carbon fuuture
+
+Carbon_Futures <- readRDS("D:/Dort data science/Case Study/Project 1/RDS Data Sets/RDS Data Sets/Carbon Futures.rds")
+colnames(Carbon_Futures)[colnames(Carbon_Futures) == "time"] <- "Start.Date"
+merged_data4 <- merge(Carbon_Futures, ActualTotalLoad_Germany_Aggregated, by = "Start.Date", all = TRUE)
+merged_data4 <- na.omit(merged_data4)
+
+
+
+
+lagged_carbon_values <- unlist(merged_data4$eua_futures_price)  #temp column data type was as list.
+lagged_carbon_numeric <- as.numeric(lagged_carbon_values)
+#difference in length between the original "temp" column and the lagged numeric vector to calculating NA.
+length_diff <-  length(merged_data4$eua_futures_price) - length(lagged_carbon_numeric)    
+lagged_carbon_numeric <- c(lagged_carbon_numeric, rep(NA, length_diff))
+merged_data4$eua_futures_price <- lagged_carbon_numeric
+# Create lagged future price
+merged_data4$eua_futures_price <- dplyr::lag(merged_data4$eua_futures_price, 1)
+lagged_data <- merged_data4
+# Lag load data
+lagged_data$Total_load_lag1 <- dplyr::lag(lagged_data$Total.Load, 1)
+lagged_data$Total_load_lag2 <- dplyr::lag(lagged_data$Total.Load, 2)
+lagged_data$Total_load_lag3 <- dplyr::lag(lagged_data$Total.Load, 3)
+lagged_data$Total_load_lag24 <- dplyr::lag(lagged_data$Total.Load, 24)
+lagged_data$Total_load_lag144 <- dplyr::lag(lagged_data$Total.Load, 144)
+lagged_data$Total_load_lag168 <- dplyr::lag(lagged_data$Total.Load, 168)
+lagged_data$Total_load_lag336 <- dplyr::lag(lagged_data$Total.Load, 336)
+lagged_data$Total_load_lag25 <- dplyr::lag(lagged_data$Total.Load, 25)
+lagged_data$Total_load_lag26 <- dplyr::lag(lagged_data$Total.Load, 26)
+lagged_data$Total_load_lag23 <- dplyr::lag(lagged_data$Total.Load, 23)
+lagged_data$Total_load_lag169 <- dplyr::lag(lagged_data$Total.Load, 169)
+lagged_data$Total_load_lag170 <- dplyr::lag(lagged_data$Total.Load, 170)
+lagged_data$Total_load_lag167 <- dplyr::lag(lagged_data$Total.Load, 167)
+#lagged_data <- na.omit(lagged_data)
+# Fit linear regression model
+lm_model4 <- lm(Total.Load ~ Total_load_lag1 + Total_load_lag2 + Total_load_lag3 +
+                  Total_load_lag24 + Total_load_lag144 + Total_load_lag168 +
+                  Total_load_lag336 + Total_load_lag25 +Total_load_lag26+ Total_load_lag23 +
+                  Total_load_lag169 +Total_load_lag170 + Total_load_lag167 +lagged_data$eua_futures_price, data = lagged_data)
+
+
+
+#predicted_load1 <- predict(lm_model1, newdata = lagged_data)
+
+
+
+forecasts <- lm_model4$fitted.values[!is.na(lm_model4$fitted.values)]
+errors <- lm_model4$residuals[!is.na(lm_model4$residuals)]
+msfe_carbon <- sqrt(mean(errors^2))
+
+
+
+summary(lm_model4)
+cat("MSFE carbon price",        msfe_carbon, "\n")
+
+
+```
+
+
+
+```{r}
+#Model 5
+Day_Ahead_Forecasts_Wind_Solar <- readRDS("D:/Dort data science/Case Study/Project 1/RDS Data Sets/RDS Data Sets/Day Ahead Forecasts Wind Solar Germany.rds")
+colnames(Day_Ahead_Forecasts_Wind_Solar)[colnames(Day_Ahead_Forecasts_Wind_Solar) == "time"] <- "Start.Date"
+Day_Ahead_Forecasts_Wind_Solar <- Day_Ahead_Forecasts_Wind_Solar %>% mutate(wind = Day_Ahead_Forecasts_Wind_Solar$`Wind Offshore` + Day_Ahead_Forecasts_Wind_Solar$`Wind Onshore`, 
+                               solar = Day_Ahead_Forecasts_Wind_Solar$Solar,
+                                .keep="unused")
+Day_Ahead_Forecasts_Wind_Solar <- as.data.frame(Day_Ahead_Forecasts_Wind_Solar)
+selected_columns <- subset(Day_Ahead_Forecasts_Wind_Solar, select = c("Start.Date", "wind", "solar"))
+
+merged_data5 <- merge(selected_columns, ActualTotalLoad_Germany_Aggregated, by = "Start.Date", all = TRUE)
+merged_data5 <- na.omit(merged_data5)
+
+
+# Load the function file
+missing <- NA_checking_per_columns(merged_data5)
+print(missing)
+
+
+
+merged_data5 <- as.data.frame(merged_data5)
+
+
+#Lag all columns except the first 
+lagged_data <- merged_data5
+# Lag all columns except the first(Start.Date) and last one(Total.Load)
+lagged_data[, -c(1, ncol(lagged_data))] <- lapply(lagged_data[, -c(1, ncol(lagged_data))], function(x) dplyr::lag(x, 1))
+
+
+
+# Remove rows with NA values in Total.Load (if any)
+
+lagged_data <- as.data.frame(lagged_data)
+
+# Fit linear model with lagged predictor but not lagged response
+lagged_data$Total_load_lag1 <- dplyr::lag(lagged_data$Total.Load, 1)
+lagged_data$Total_load_lag2 <- dplyr::lag(lagged_data$Total.Load, 2)
+lagged_data$Total_load_lag3 <- dplyr::lag(lagged_data$Total.Load, 3)
+lagged_data$Total_load_lag24 <- dplyr::lag(lagged_data$Total.Load, 24)
+lagged_data$Total_load_lag144 <- dplyr::lag(lagged_data$Total.Load, 144)
+lagged_data$Total_load_lag168 <- dplyr::lag(lagged_data$Total.Load, 168)
+lagged_data$Total_load_lag336 <- dplyr::lag(lagged_data$Total.Load, 336)
+lagged_data$Total_load_lag25 <- dplyr::lag(lagged_data$Total.Load, 25)
+lagged_data$Total_load_lag26 <- dplyr::lag(lagged_data$Total.Load, 26)
+lagged_data$Total_load_lag23 <- dplyr::lag(lagged_data$Total.Load, 23)
+lagged_data$Total_load_lag169 <- dplyr::lag(lagged_data$Total.Load, 169)
+lagged_data$Total_load_lag170 <- dplyr::lag(lagged_data$Total.Load, 170)
+lagged_data$Total_load_lag167 <- dplyr::lag(lagged_data$Total.Load, 167)
+#lagged_data <- na.omit(lagged_data)
+# Fit linear regression model
+lm_model5 <- lm(Total.Load ~ Total_load_lag1 + Total_load_lag2 + Total_load_lag3 +
+                  Total_load_lag24 + Total_load_lag144 + Total_load_lag168 +
+                  Total_load_lag336 + Total_load_lag25 +Total_load_lag26+ Total_load_lag23 +
+                  Total_load_lag169 +Total_load_lag170 + Total_load_lag167 +
+                  lagged_data$wind+
+                  lagged_data$solar , data = lagged_data)
+
+
+forecasts <- lm_model5$fitted.values[!is.na(lm_model5$fitted.values)]
+errors <- lm_model5$residuals[!is.na(lm_model5$residuals)]
+msfe_day_ahead_wind_solar <- sqrt(mean(errors^2))
+
+
+
+summary(lm_model5)
+cat("MSFE wind solar",        msfe_day_ahead_wind_solar, "\n")
+
+```
+
+
+
+```{r}
+#Model 6
+Allocated_Transfer_Capacities <- readRDS("D:/Dort data science/Case Study/Project 1/RDS Data Sets/RDS Data Sets/Allocated Transfer Capacities.rds")
+colnames(Allocated_Transfer_Capacities)[colnames(Allocated_Transfer_Capacities) == "time"] <- "Start.Date"
+Allocated_Transfer_Capacities <- Allocated_Transfer_Capacities %>% replace_na(list(net_AT = 0, net_BE = 0 , net_CH = 0, net_CZ = 0, net_DK = 0, net_FR = 0, net_LU = 0, net_NL = 0,  net_NO = 0, net_PL = 0, net_SE = 0))
+
+Allocated_Transfer_Capacities <- Allocated_Transfer_Capacities %>% mutate(net_Allocated_transfer_capacity = Allocated_Transfer_Capacities$net_AT + Allocated_Transfer_Capacities$net_BE+ Allocated_Transfer_Capacities$net_CH+ Allocated_Transfer_Capacities$net_CZ+Allocated_Transfer_Capacities$net_DK+ Allocated_Transfer_Capacities$net_FR+ Allocated_Transfer_Capacities$net_LU+Allocated_Transfer_Capacities$net_NL+ Allocated_Transfer_Capacities$net_NO, .keep="unused")
+
+Allocated_Transfer_Capacities <- as.data.frame(Allocated_Transfer_Capacities)
+selected_columns <- subset(Allocated_Transfer_Capacities, select = c("Start.Date", "net_Allocated_transfer_capacity"))
+merged_data6 <- merge(selected_columns, ActualTotalLoad_Germany_Aggregated, by = "Start.Date", all = TRUE)
+merged_data6 <- na.omit(merged_data6)
+
+
+missing <- NA_checking_per_columns(merged_data6)
+print(missing)
+
+merged_data6 <- as.data.frame(merged_data6)
+
+
+#Lag all columns except the first 
+lagged_data <- merged_data6
+# Lag all columns except the first(Start.Date) and last one(Total.Load)
+#lagged_data[, -c(1, ncol(lagged_data))] <- lapply(lagged_data[, -c(1, ncol(lagged_data))], function(x) dplyr::lag(x, 1))
+# Create lagged temperature
+lagged_data$net_Allocated_transfer_capacity <- dplyr::lag(lagged_data$net_Allocated_transfer_capacity, 1)
+missing <- NA_checking_per_columns(lagged_data)
+print(missing)
+
+
+# Remove rows with NA values in Total.Load (if any)
+
+lagged_data <- as.data.frame(lagged_data)
+
+# Fit linear model with lagged predictor but not lagged response
+lagged_data$Total_load_lag1 <- dplyr::lag(lagged_data$Total.Load, 1)
+lagged_data$Total_load_lag2 <- dplyr::lag(lagged_data$Total.Load, 2)
+lagged_data$Total_load_lag3 <- dplyr::lag(lagged_data$Total.Load, 3)
+lagged_data$Total_load_lag24 <- dplyr::lag(lagged_data$Total.Load, 24)
+lagged_data$Total_load_lag144 <- dplyr::lag(lagged_data$Total.Load, 144)
+lagged_data$Total_load_lag168 <- dplyr::lag(lagged_data$Total.Load, 168)
+lagged_data$Total_load_lag336 <- dplyr::lag(lagged_data$Total.Load, 336)
+lagged_data$Total_load_lag25 <- dplyr::lag(lagged_data$Total.Load, 25)
+lagged_data$Total_load_lag26 <- dplyr::lag(lagged_data$Total.Load, 26)
+lagged_data$Total_load_lag23 <- dplyr::lag(lagged_data$Total.Load, 23)
+lagged_data$Total_load_lag169 <- dplyr::lag(lagged_data$Total.Load, 169)
+lagged_data$Total_load_lag170 <- dplyr::lag(lagged_data$Total.Load, 170)
+lagged_data$Total_load_lag167 <- dplyr::lag(lagged_data$Total.Load, 167)
+#lagged_data <- na.omit(lagged_data)
+# Fit linear regression model
+lm_model6 <- lm(Total.Load ~ Total_load_lag1 + Total_load_lag2 + Total_load_lag3 +
+                  Total_load_lag24 + Total_load_lag144 + Total_load_lag168 +
+                  Total_load_lag336 + Total_load_lag25 +Total_load_lag26+ Total_load_lag23 +
+                  Total_load_lag169 +Total_load_lag170 + Total_load_lag167 +
+                  lagged_data$net_Allocated_transfer_capacity , data = lagged_data)
+
+
+
+forecasts <- lm_model6$fitted.values[!is.na(lm_model6$fitted.values)]
+errors <- lm_model6$residuals[!is.na(lm_model6$residuals)]
+msfe_day_tranfer_capacity <- sqrt(mean(errors^2))
+msfe_day_tranfer_capacity
+
+summary(lm_model6)
+cat("MSFE allocated transfer capacity",        msfe_day_tranfer_capacity, "\n")
+
+```
+
+
+```{r}
+#Model 7
+Net_Physical_Flows <- readRDS("D:/Dort data science/Case Study/Project 1/RDS Data Sets/RDS Data Sets/Net Physical Flows.rds")
+colnames(Net_Physical_Flows)[colnames(Net_Physical_Flows) == "time"] <- "Start.Date"
+Net_Physical_Flows <- Net_Physical_Flows %>% replace_na(list(net_AT = 0, net_BE = 0 , net_CH = 0, net_CZ = 0, net_DK = 0, net_FR = 0, net_LU = 0, net_NL = 0,  net_NO = 0, net_PL = 0, net_SE = 0))
+
+Net_Physical_Flows <- Net_Physical_Flows %>% mutate(net_export = Net_Physical_Flows$net_AT + Net_Physical_Flows$net_BE+ Net_Physical_Flows$net_CH+ Net_Physical_Flows$net_CZ+Net_Physical_Flows$net_DK+ Net_Physical_Flows$net_FR+ Net_Physical_Flows$net_LU+Net_Physical_Flows$net_NL+ Net_Physical_Flows$net_NO+Net_Physical_Flows$net_PL+Net_Physical_Flows$net_SE, .keep="unused")
+
+Net_Physical_Flows <- as.data.frame(Net_Physical_Flows)
+selected_columns <- subset(Net_Physical_Flows, select = c("Start.Date", "net_export"))
+merged_data7 <- merge(selected_columns, ActualTotalLoad_Germany_Aggregated, by = "Start.Date", all = TRUE)
+merged_data7 <- na.omit(merged_data7)
+
+
+missing <- NA_checking_per_columns(merged_data7)
+print(missing)
+
+merged_data7 <- as.data.frame(merged_data7)
+
+
+#Lag all columns except the first 
+lagged_data <- merged_data7
+# Lag all columns except the first(Start.Date) and last one(Total.Load)
+#lagged_data[, -c(1, ncol(lagged_data))] <- lapply(lagged_data[, -c(1, ncol(lagged_data))], function(x) dplyr::lag(x, 1))
+lagged_data$net_export <- dplyr::lag(lagged_data$net_export, 1)
+
+lagged_data <- as.data.frame(lagged_data)
+
+# Fit linear model with lagged predictor but not lagged response
+lagged_data$Total_load_lag1 <- dplyr::lag(lagged_data$Total.Load, 1)
+lagged_data$Total_load_lag2 <- dplyr::lag(lagged_data$Total.Load, 2)
+lagged_data$Total_load_lag3 <- dplyr::lag(lagged_data$Total.Load, 3)
+lagged_data$Total_load_lag24 <- dplyr::lag(lagged_data$Total.Load, 24)
+lagged_data$Total_load_lag144 <- dplyr::lag(lagged_data$Total.Load, 144)
+lagged_data$Total_load_lag168 <- dplyr::lag(lagged_data$Total.Load, 168)
+lagged_data$Total_load_lag336 <- dplyr::lag(lagged_data$Total.Load, 336)
+lagged_data$Total_load_lag25 <- dplyr::lag(lagged_data$Total.Load, 25)
+lagged_data$Total_load_lag26 <- dplyr::lag(lagged_data$Total.Load, 26)
+lagged_data$Total_load_lag23 <- dplyr::lag(lagged_data$Total.Load, 23)
+lagged_data$Total_load_lag169 <- dplyr::lag(lagged_data$Total.Load, 169)
+lagged_data$Total_load_lag170 <- dplyr::lag(lagged_data$Total.Load, 170)
+lagged_data$Total_load_lag167 <- dplyr::lag(lagged_data$Total.Load, 167)
+#lagged_data <- na.omit(lagged_data)
+# Fit linear regression model
+lm_model7 <- lm(Total.Load ~ Total_load_lag1 + Total_load_lag2 + Total_load_lag3 +
+                  Total_load_lag24 + Total_load_lag144 + Total_load_lag168 +
+                  Total_load_lag336 + Total_load_lag25 +Total_load_lag26+ Total_load_lag23 +
+                  Total_load_lag169 +Total_load_lag170 + Total_load_lag167 +
+                  lagged_data$net_export , data = lagged_data)
+
+
+
+forecasts <- lm_model7$fitted.values[!is.na(lm_model7$fitted.values)]
+errors <- lm_model7$residuals[!is.na(lm_model7$residuals)]
+msfe_day_net_physical_flow <- sqrt(mean(errors^2))
+msfe_day_net_physical_flow
+
+summary(lm_model7)
+cat("MSFE allocated net physical flow",        msfe_day_net_physical_flow, "\n")
+```
+
+```{r}
+
+#Comparison of models MSFE  [Task g]
+# Example MSFE values and model names
+msfe_values <- c(msfe_mod1, msfe_temp, msfe_carbon, msfe_day_ahead_wind_solar, msfe_day_tranfer_capacity, msfe_gene_type, msfe_maintanence,msfe_day_net_physical_flow )  # Example MSFE values
+model_names <- c(" AR model", "External temperature", "External carbon", "External wind solar dayahead price", "External transfer capacity", "External generation type", " External maintanence", "External net physical flow")  # Example model names
+
+# Create a data frame to store the results
+msfe_data <- data.frame(Model = model_names, MSFE = msfe_values)
+
+# Print the data frame to verify
+print(msfe_data)
+
+```
+```{r}
+#Task [h]
+#model with all regressors
+
+colnames(merged_data5)[colnames(merged_data5) == "solar"] <- "Day_Ahead_Solar"
+
+colnames(merged_data5)[colnames(merged_data5) == "wind"] <- "Day_Ahead_wind"
+# List of data frames to merge
+dfs <- list(merged_df, 
+             merged_data2[, -which(names(merged_data2) == "Total.Load")], 
+             merged_data3[, -which(names(merged_data3) == "Total.Load")], 
+             merged_data4[, -which(names(merged_data4) == "Total.Load")], 
+             merged_data5[, -which(names(merged_data5) == "Total.Load")], 
+             merged_data6[, -which(names(merged_data6) == "Total.Load")], 
+             merged_data7[, -which(names(merged_data7) == "Total.Load")])
+
+# Initialize merged_df with the first data frame
+merged_df_total <- dfs[[1]]
+
+# Loop through the rest of the data frames and merge them
+for (i in 2:length(dfs)) {
+  merged_df_total <- merge(merged_df_total, dfs[[i]], by = "Start.Date")
+}
+colnames(merged_df_total)
+
+
+new_ful_df <- merged_df_total
+lagged_data <- as.data.frame(merged_df_total)
+# Lag all columns except the first(Start.Date) and last one(Total.Load)
+lagged_data$temp <- dplyr::lag(lagged_data$temp, 1)
+lagged_data$Fossil <- dplyr::lag(lagged_data$Fossil, 1)
+lagged_data$Hydro <- dplyr::lag(lagged_data$Hydro, 1)
+lagged_data$Other <- dplyr::lag(lagged_data$Other, 1)
+lagged_data$Solar <- dplyr::lag(lagged_data$Solar, 1)
+lagged_data$Waste <- dplyr::lag(lagged_data$Waste, 1)
+lagged_data$Wind <- dplyr::lag(lagged_data$Wind, 1)
+lagged_data$available <- dplyr::lag(lagged_data$available, 1)
+lagged_data$installed <- dplyr::lag(lagged_data$installed, 1)
+lagged_data$eua_futures_price <- dplyr::lag(lagged_data$eua_futures_price, 1)
+lagged_data$Day_Ahead_wind <- dplyr::lag(lagged_data$Day_Ahead_wind, 1)
+lagged_data$Day_Ahead_Solar <- dplyr::lag(lagged_data$Day_Ahead_Solar, 1)
+lagged_data$net_export <- dplyr::lag(lagged_data$net_export, 1)
+lagged_data$net_Allocated_transfer_capacity <- dplyr::lag(lagged_data$net_Allocated_transfer_capacity, 1)
+
+# Fit linear model with lagged predictor but not lagged response
+lagged_data$Total_load_lag1 <- dplyr::lag(lagged_data$Total.Load, 1)
+lagged_data$Total_load_lag2 <- dplyr::lag(lagged_data$Total.Load, 2)
+lagged_data$Total_load_lag3 <- dplyr::lag(lagged_data$Total.Load, 3)
+lagged_data$Total_load_lag24 <- dplyr::lag(lagged_data$Total.Load, 24)
+lagged_data$Total_load_lag144 <- dplyr::lag(lagged_data$Total.Load, 144)
+lagged_data$Total_load_lag168 <- dplyr::lag(lagged_data$Total.Load, 168)
+lagged_data$Total_load_lag336 <- dplyr::lag(lagged_data$Total.Load, 336)
+lagged_data$Total_load_lag25 <- dplyr::lag(lagged_data$Total.Load, 25)
+lagged_data$Total_load_lag26 <- dplyr::lag(lagged_data$Total.Load, 26)
+lagged_data$Total_load_lag23 <- dplyr::lag(lagged_data$Total.Load, 23)
+lagged_data$Total_load_lag169 <- dplyr::lag(lagged_data$Total.Load, 169)
+lagged_data$Total_load_lag170 <- dplyr::lag(lagged_data$Total.Load, 170)
+lagged_data$Total_load_lag167 <- dplyr::lag(lagged_data$Total.Load, 167)
+#lagged_data <- na.omit(lagged_data)
+new_ful_df <- lagged_data
+# Fit linear regression model
+lm_model_full <- lm(Total.Load ~ Total_load_lag1 + Total_load_lag2 + Total_load_lag3 +
+                  Total_load_lag24 + Total_load_lag144 + Total_load_lag168 +
+                  Total_load_lag336 + Total_load_lag25 +Total_load_lag26+ Total_load_lag23 +
+                  Total_load_lag169 +Total_load_lag170 + Total_load_lag167 +
+                  lagged_data$temp+lagged_data$Fossil+lagged_data$Hydro+lagged_data$Other+lagged_data$Solar+lagged_data$Waste+lagged_data$Wind+lagged_data$available+lagged_data$installed+lagged_data$eua_futures_price+lagged_data$Day_Ahead_wind+lagged_data$Day_Ahead_Solar+lagged_data$net_Allocated_transfer_capacity+lagged_data$net_export , data = lagged_data)
+
+
+
+forecasts <- lm_model_full$fitted.values[!is.na(lm_model_full$fitted.values)]
+errors <- lm_model_full$residuals[!is.na(lm_model_full$residuals)]
+msfe_all_predictors <- sqrt(mean(errors^2))
+msfe_all_predictors
+
+summary(lm_model_full)
+aic_model_full<- AIC(lm_model_full)
+cat("MSFE all predictors",        msfe_all_predictors, "\n")
+
+cat("AIC all predictors",        aic_model_full, "\n")
+
+
+
+
+
+```
+```{r}
+# Calculate the correlation matrix
+numeric_lagged_data <- lagged_data[sapply(lagged_data, is.numeric)]
+numeric_lagged_data <-na.omit(numeric_lagged_data)
+cor_matrix <- cor(numeric_lagged_data[,1:15])
+# Visualize the correlation matrix with values
+corrplot::corrplot(cor_matrix, method = "circle", addCoef.col = "black", number.cex = 0.6)
+```
+
+```{r}
+# [Task i]  Select only pvalue<0.05 .  Found Fossil, Hydro, carbon price, day ahead wind, net allocated transfer capacity are promising
+lm_model_significant <-   lm(Total.Load ~ Total_load_lag1 + Total_load_lag2 + Total_load_lag3 +
+                  Total_load_lag24 + Total_load_lag144 + Total_load_lag168 +
+                  Total_load_lag336 + Total_load_lag25 +Total_load_lag26+ Total_load_lag23 +
+                  Total_load_lag169 +Total_load_lag170 + Total_load_lag167 +
+                  +lagged_data$Hydro+lagged_data$Fossil+lagged_data$eua_futures_price+lagged_data$Day_Ahead_wind+lagged_data$net_Allocated_transfer_capacity, data = lagged_data)
+
+forecasts <- lm_model_significant$fitted.values[!is.na(lm_model_significant$fitted.values)]
+errors <- lm_model_significant$residuals[!is.na(lm_model_significant$residuals)]
+msfe_significant_predictors <- sqrt(mean(errors^2))
+msfe_significant_predictors
+
+summary(lm_model_significant)
+aic_model_specific<- AIC(lm_model_significant)
+cat("MSFE significant predictors",        msfe_significant_predictors, "\n")
+
+cat("AIC significant predictors",        aic_model_specific, "\n")
+
+
+
+
+```
+```{r}
+
+# check multicollinearity for the full model
+car::vif(lm_model_full)
+ols_vif_tol(lm_model_full)
+
+# check multicollinearity for best fitted Model
+car::vif(lm_model_significant)
+ols_vif_tol(lm_model_significant)
+
+
+```
+
+
+```{r}
+#As i select the significant predictors but the MSFE comes larger, so move to forward selection method.
+#numeric_lagged_data <- lagged_data[sapply(lagged_data, is.numeric)]
+lagged_data <-na.omit(new_ful_df)
+lagged_data <- lagged_data[, -1, drop = FALSE]
+start.model <- lm(Total.Load ~ 1, data = lagged_data)
+full.model <- lm(Total.Load ~ ., data = lagged_data)
+forward.model <- step(start.model, 
+                      scope = list(lower = start.model, upper = full.model),
+                      direction = "forward")
+
+
+#final_model_variables <- names(coef(forward.model))
+#final_model_variables <- final_model_variables[!final_model_variables %in% c("Total.Load", "Intercept")]
+#top_10_variables <- head(final_model_variables, 10)
+
+
+
+
+
+```
+
+```{r}
+#smod1<-  lm(load$tload~ lag(load$tload,1)+ lag(load$tload, 2)+ lag(load$tload, 3) + lag(load$tload, 24)+ lag(load$tload, 144) + lag(load$tload, 168) + lag(load$tload, 336) + lag(load$tload,23) +lag(load$tload,22)+ lag(load$tload, 25) + lag(load$tload, 167)+lag(load$tload, 166)++lag(load$tload, 169))    [Base AR model]
+library(MASS)
+
+anova_table <- anova(forward.model)
+
+# Extract the AIC values
+aic_values <- forward.model$anova$AIC
+
+combined_aic <- c(aic_values, aic_smod1)
+# Plot the AIC values
+# Plot the AIC values from the forward model as points
+plot(aic_values, type = "b", pch = 19, col = "blue",
+     xlab = "Step", ylab = "AIC", main = "AIC values for Forward Model")
+
+# Add points for the AIC values from the AR model
+points(aic_smod1, type = "b", pch = 19, col = "red")
+
+# Add a legend
+legend("topright", legend = c("Forward Model", "AR Model"), col = c("blue", "red"), pch = 19, bty = "n")
+
+
+forward.model$anova$Step
+aic_values
+
+best_model_forward <-lm(Total.Load ~  Total_load_lag1 + Total_load_lag2 + Total_load_lag167 + 
+    Total_load_lag169 + Total_load_lag168 + Total_load_lag170 + 
+    Total_load_lag3 + Total_load_lag23 + Total_load_lag25 + Total_load_lag24 + 
+    Total_load_lag26 + Total_load_lag336 + Hydro + Fossil + Total_load_lag144 + 
+    Day_Ahead_wind + Day_Ahead_Solar + net_Allocated_transfer_capacity + 
+    eua_futures_price + available + Waste + Other + net_export ,lagged_data)
+
+errors <- best_model_forward$residuals[!is.na(best_model_forward$residuals)]
+msfe_forwardstepwise_best_model <- sqrt(mean(errors^2))
+
+
+
+
+
+
+
+
+
+```
+
+
+
+
+
+
+```{r}
+ #Found Fossil, Hydro, carbon price, day ahead wind, net allocated transfer capacity are promising. Decomposing these predictors and load data and fit a new model.
+
+merged_df_total$Start.Date <- as.Date(merged_df_total$Start.Date)
+
+# Create a time series object
+ts_load <- ts(merged_df_total$Total.Load, frequency = 24)  # Assuming hourly data (24 observations per day)
+
+# Apply seasonal decomposition using stlplus
+
+daily.decomp <- stlplus(ts_load, n.p=24, s.window=17, s.degree=2)
+ts_load_ds_day <- remainder(daily.decomp)
+
+weekly.decomp <- stlplus(ts_load_ds_day, n.p=24*7, s.window=17, s.degree=2)
+ts_load_ds_week <- remainder(weekly.decomp)
+
+monthly.decomp <- stlplus(ts_load_ds_week, n.p=24*30, s.window=17, s.degree=2)
+ts_load_ds_month <- remainder(monthly.decomp)
+
+yearly.decomp <- stlplus(ts_load_ds_month, n.p=24*365, s.window=17, s.degree=2)
+ts_load_ds_year <- remainder(yearly.decomp)
+
+
+
+ts_load_dsdt <- data.frame(Start.Date = merged_df_total$Start.Date, Original = ts_load,
+                                                                     Daily_Load = ts_load_ds_day,
+                                                                     Weekly_Load = ts_load_ds_week,
+                                                                     Monthly_Load = ts_load_ds_month,
+                                                                     Yearly_Load = ts_load_ds_year)
+Pacf(ts_load_dsdt$Yearly, lag.max = 200,  ylim = c(-1,1))
+ts_load_dsdt$Fitted <- trend(daily.decomp) + trend(weekly.decomp) + trend(monthly.decomp) + trend(yearly.decomp) + seasonal(daily.decomp) + seasonal(weekly.decomp) + seasonal(monthly.decomp) + seasonal(yearly.decomp)
+
+# Actually deseason and detrend regressors
+deseasond_merge_df <- subset(merged_df_total, select = c(eua_futures_price, Fossil,Hydro, net_Allocated_transfer_capacity, Day_Ahead_wind))
+
+
+#cHECKING for regressior deseasoning
+partial_acf_fossil <- Pacf(deseasond_merge_df$Fossil, lag.max = 200, plot = T)
+partial_acf_hydro <- Pacf(deseasond_merge_df$Hydro, lag.max = 200, plot = T)
+partial_acf_carbon <- Pacf(deseasond_merge_df$eua_futures_price, lag.max = 300, plot = T)
+partial_acf_net <- Pacf(deseasond_merge_df$net_Allocated_transfer_capacity, lag.max = 50, plot = T)
+
+
+
+#seeperate decomposition fossil
+daily.decomp_fossil <- stlplus(deseasond_merge_df$Fossil, n.p=24, s.window=17, s.degree=2)
+decomp_fossil_day <- remainder(daily.decomp_fossil)
+weekly.decomp_fossil <- stlplus(decomp_fossil_day, n.p=24*7, s.window=17, s.degree=2)
+decomp_fossil_week <- remainder(weekly.decomp_fossil)
+ts_load_dsdt$Fossil_Weekly <- decomp_fossil_week
+
+#seeperate decomposition hydro
+daily.decomp_hydro <- stlplus(deseasond_merge_df$Hydro, n.p=24, s.window=17, s.degree=2)
+decomp_hydro_day <- remainder(daily.decomp_hydro)
+ts_load_dsdt$Hydro_daily <- decomp_hydro_day
+
+#seeperate decomposition hydro
+daily.decomp_wind <- stlplus(deseasond_merge_df$Day_Ahead_wind, n.p=24, s.window=17, s.degree=2)
+decomp_hydro_day <- remainder(daily.decomp_wind)
+ts_load_dsdt$day_ahead_wind <- decomp_hydro_day
+
+#seeperate decomposition carbon
+daily.decomp_carbon <- stlplus(deseasond_merge_df$eua_futures_price, n.p=24, s.window=17, s.degree=2)
+decomp_carbon_day <- remainder(daily.decomp_carbon)
+#weekly.decomp_carbon <- stlplus(decomp_fossil_day, n.p=24*7, s.window=17, s.degree=2)
+#decomp_carbon_week <- remainder(weekly.decomp_carbon)
+ts_load_dsdt$carbon_daily <- decomp_carbon_day
+
+#seeperate decomposition transfer
+daily.decomp_transfer_cap <- stlplus(deseasond_merge_df$net_Allocated_transfer_capacity, n.p=24, s.window=17, s.degree=2)
+decomp_transfer_day <- remainder(daily.decomp_transfer_cap)
+ts_load_dsdt$transfer_daily<- decomp_transfer_day
+
+
+# Regression with the most promising regressors
+promising_reg_dsdt <- lm(Yearly_Load ~ lag(Yearly_Load, 1) + lag(Yearly_Load, 2) + lag(Yearly_Load, 3)
+  + lag(Yearly_Load, 24) + lag(Yearly_Load, 144) + lag(Yearly_Load, 168) + lag(Yearly_Load, 336)
+  + lag(Yearly_Load, 25) + lag(Yearly_Load, 26)+lag(Yearly_Load, 23)  +lag(Yearly_Load, 169)+lag(Yearly_Load, 170) +lag(Yearly_Load, 167)  +lag(Fossil_Weekly, 1) + lag(Hydro_daily, 1) + lag(carbon_daily, 1)
+  + lag(transfer_daily, 1)+ lag(day_ahead_wind, 1), data = ts_load_dsdt)
+summary(promising_reg_dsdt)
+
+
+
+final_df <- data.frame(Start.Date = merged_df_total$Start.Date, Load = ts_load_dsdt$Original, Trend_Seasonal = ts_load_dsdt$Fitted)
+final_df <- final_df[-(1:336),]
+final_df$Reg_Fit <- promising_reg_dsdt$fitted.values
+final_df$Fit_Tre_Cyc <- final_df$Trend_Seasonal + final_df$Reg_Fit
+final_df$Residuals <- final_df$Load - final_df$Fit_Tre_Cyc
+MSFE_final <- sqrt(mean((final_df$Residuals)^2))  
+MSFE_final
+aic_decomposed_mdl<- AIC(promising_reg_dsdt)
+aic_decomposed_mdl
+library(MASS)
+# Initialize an empty plot
+# Plot the AIC values from the forward model as points
+# Create the initial plot
+plot(aic_values, type = "b", pch = 19, col = "blue",
+     xlab = "Step", ylab = "AIC", main = "AIC values for Forward Model")
+
+# Add points for the AIC values from the AR model
+points(aic_model_full, type = "b", pch = 19, col = "orange")
+
+# Add points for the AIC values from the specific model
+points(aic_model_specific, type = "b", pch = 19, col = "black")
+
+# Add points for the AIC values from the smod1 model
+points(aic_smod1, type = "b", pch = 19, col = "red")
+
+# Add points for the AIC values from the decomposed model
+points(aic_decomposed_mdl, type = "b", pch = 19, col = "green")
+
+
+
+# Add a legend
+legend("topright", legend = c("Forward Model", "AR Model", "Decomposed model","aic_model_full","aic_model_specific"), col = c("blue", "red", "green","orange","black"), pch = 19, bty = "n")
+```
+
