@@ -1,0 +1,934 @@
+---
+title: "Project 3"
+author: "Mukta Ghpsh"
+date: "2024-06-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+T
+
+```{r cars}
+# Housekeeping: Get packages and libraries, load data-set, set directory:
+# Setup
+set.seed(1234) # Might be needed
+options(scipen = 999, digits = 10) # Adjust to see different decimal points
+install_load <- function(packages) {
+  for (package in packages) {
+    if (!require(package, character.only = TRUE)) {
+      install.packages(package)
+      library(package, character.only = TRUE)
+    }
+  }
+}
+packages <- c("ggplot2", "dplyr", "lubridate", "tidyr", "forecast", "stats", "rpart","zoo", "tseries", "readr", "urca", "ggplot2","tidyverse", "rstatix", "olsrr", "ggfortify", "leaps", "lubridate", "dplyr", "forecast", "stats", "stlplus", "dynlm", "RMySQL", "SparseM", "quantreg", "greybox", "psych", "Hmisc", "urca", "zoo", "rugarch", "rpart.plot", "forecast", "rpart", "quantmod",  "xgboost", "stats", "fGarch", "readr","gplots","keras","car") # Add the desired packages here
+#install_load(packages) # Custom function to install and load packages
+library(purrr)
+library(DBI)
+library(readr)
+library(dplyr)
+library(quantreg)
+library(SparseM)
+library(mgcv)
+#library(gamlss)
+#library(gamlss.dist)
+library(Hmisc)
+library(psych)
+library(zoo)
+library(stats)
+library(tseries)
+library(urca)
+library(readr)
+library(stats)
+library(ggplot2)
+library(lattice)
+library(lubridate)
+library(data.table)
+library(dplyr)
+library(tidyverse)
+library(rstatix)
+library(ggplot2)
+library(olsrr)
+library(MASS)
+library(ggfortify)
+library(ggplot2)
+library(readxl)
+library(magrittr)
+library(corrplot)
+library(broom)
+library(leaps)
+library(knitr)
+library(forecast)
+library(stlplus)
+library(dynlm)
+library(gridExtra)
+library(Hmisc)
+library(psych)
+library(forecast)
+library(rpart)
+library(quantmod)
+library(caret)
+library(xgboost)
+library(keras)
+library(httr)
+library(gplots)
+
+library(keras)
+library(reticulate)
+library(car)
+#install_keras()
+
+setwd("D:/Dort data science/Case Study/Project 2") #Set this to where data sets are
+predictors_bd <- readRDS("C:/Users/USER/Downloads/predictors (2).rds")
+
+Day_Ahead_Prices <- read.csv("D:/Dort data science/Case Study/Project 2/Day-ahead_prices_201501010000_202404020000_Hour.csv", sep=";")
+
+Day_Ahead_Prices <- Day_Ahead_Prices[, c(1, 3, 16)]
+colnames(Day_Ahead_Prices) <- c("Start.Date", "DE_LU", "DE_AT_LU")
+Day_Ahead_Prices$Start.Date <- mdy_hm(Day_Ahead_Prices$Start.Date)
+ex_reg<- readRDS("D:/Dort data science/Case Study/Project 2/selected_external_lagged_data_and_diff.rds")
+
+
+```
+
+## Including Plots
+
+
+
+```{r pressure, echo=FALSE}
+# Data Cleaning and adjustments:
+# Following function converts "-" into NA
+
+clean_data <- function(df) {
+  df <- df %>%
+    mutate(across(where(is.character), ~if_else(. == "-", NA_character_, .)))
+
+  return(df)
+}
+Day_Ahead_Prices <- clean_data(Day_Ahead_Prices)
+
+
+# DE_AT_LU discontinued after October 1st 2018, combine the columns into Price and remove the old columns
+Day_Ahead_Prices <- Day_Ahead_Prices %>%
+  mutate(Price = if_else(Start.Date < as.Date("2018-10-01"), DE_AT_LU, DE_LU))
+Day_Ahead_Prices <- Day_Ahead_Prices[, !(names(Day_Ahead_Prices) %in% c("DE_LU", "DE_AT_LU"))]
+# Character to numeric
+Day_Ahead_Prices <- Day_Ahead_Prices %>%
+  mutate(Price = as.numeric(Price))
+Day_Ahead_Prices_noDST <- Day_Ahead_Prices
+
+# Day ahead prices DST and other adjustments:
+
+adjust_time_series <- function(df) {
+  df <- df %>%filter(Start.Date >= as.POSIXct("2015-01-05 01:00:00") & Start.Date <= as.POSIXct("2024-03-16 00:00:00"))
+
+  df <- df %>%
+    mutate(
+      Year = year(Start.Date),
+      Month = month(Start.Date),
+      Day = day(Start.Date),
+      Hour = hour(Start.Date),
+      Duplicate_Hour_Flag = ifelse(Month == 10 & Hour == 2, 1, 0)
+    ) %>%
+    group_by(Year, Month, Day, Hour) %>%
+    mutate(Occurrence = row_number()) %>%
+    ungroup() %>%
+    filter(!(Month == 10 & Hour == 2 & Occurrence == 2)) %>%
+    dplyr::select(-c(Year, Month, Day, Hour, Duplicate_Hour_Flag, Occurrence))
+
+  march_data <- df %>%
+    filter(month(Start.Date) == 3) %>%
+    arrange(Start.Date) %>%
+    mutate(Next_Hour = lead(hour(Start.Date))) %>%
+    filter(hour(Start.Date) == 1 & Next_Hour == 3)
+
+  missing_rows <- march_data %>%
+    mutate(Start.Date = Start.Date + hours(1))
+
+  cols <- setdiff(names(df), "Start.Date")
+  for (col in cols) {
+    missing_rows[[col]] <- march_data[[col]]
+  }
+
+  df <- bind_rows(df, missing_rows) %>%
+    arrange(Start.Date) %>%
+    dplyr::select(-Next_Hour)
+
+  return(df)
+}
+
+Day_Ahead_Prices <- adjust_time_series(Day_Ahead_Prices)
+
+return_transform <- function(series){
+  return_series <- numeric(length(series)-1)
+  for(i in 2:length(series)){
+    if(series[i] != 0 & series[i-1] != 0){
+      return_series[i-1] <- (series[i] - series[i-1])/series[i-1]
+    }
+    else {return_series[i-1] <- NA}
+  }
+  return(return_series)
+}
+
+
+
+Day_Ahead_Prices$Return <- c(NA, return_transform(Day_Ahead_Prices$Price))
+#Day_Ahead_Prices$Return[is.na(Day_Ahead_Prices$Return)] <- 0
+Day_Ahead_Prices$returns_fd <- c(NA, diff(Day_Ahead_Prices$Return))
+#Day_Ahead_Prices$returns_fd[is.na(Day_Ahead_Prices$returns_fd)] <- 0
+main_df <-Day_Ahead_Prices
+```
+
+# 
+
+```{r}
+
+# Data dynamics:
+describe.by(Day_Ahead_Prices)
+describe.by(predictors_bd)
+
+
+Day_Ahead_Prices <- na.omit(Day_Ahead_Prices)
+# Housekeeping first: Check the dynamics of the data:
+
+# Lets fit a trend and check residuals: 
+
+sl<- seq(length(Day_Ahead_Prices$Price))
+Day_Ahead_Prices$sl <-sl
+m1_trend <- lm( Price~ poly(sl,2), data = Day_Ahead_Prices)
+price_trend<- predict(m1_trend)
+
+# Summary of m1_trend
+summary(m1_trend)
+sqrm1_trend<- m1_trend$residuals^2
+se_m1_trend<-  sum(sqrm1_trend)/m1_trend$df.residual
+
+# Print and check the evaluation metrics:
+cat("TSE",        se_m1_trend^(1/2), "\n")
+cat("TVar",       se_m1_trend, "\n")
+
+
+# Look into the price sereis dynamics:
+par(mfrow = c(2, 3))
+
+# Plot the series and add a trend line
+plot(Day_Ahead_Prices$Start.Date, Day_Ahead_Prices$Price, main = "Day-Ahead Prices", ylab="EUR", xlab= "Date", type="l", lwd=.1)
+lines(Day_Ahead_Prices$Start.Date, price_trend, col="red", lwd=2)
+
+
+# Plot acf and PACF:
+acf(Day_Ahead_Prices$Price, main = "acf of DA Prices", ylab="acf", xlab= "Lags", lag.max = 400, lwd = .5)
+pacf(Day_Ahead_Prices$Price, main = "pacf of DA Prices", ylab="pacf", xlab= "Lags", lag.max = 400, lwd = .5)
+
+# Histogram and qq plot:
+hist(Day_Ahead_Prices$Price, breaks = 100, main = "Histogram DA Prices", ylab="frequencies", xlab= "Load in MW",)
+
+
+# Look in to the return sereis dynamics:
+
+par(mfrow = c(2, 3))
+
+# Plot the series and add a trend line
+plot(Day_Ahead_Prices$Start.Date, Day_Ahead_Prices$Return, main = "Day-Ahead Ret.", ylab="EUR", xlab= "Date", type="l", lwd=.5)
+lines(Day_Ahead_Prices$Start.Date, price_trend, col="red", lwd=2)
+
+acf(Day_Ahead_Prices$Return, main = "acf of DA Return", ylab="acf", xlab= "Lags", lag.max = 400, lwd = .5)
+pacf(Day_Ahead_Prices$Return, main = "pacf of DA Ret", ylab="pacf", xlab= "Lags", lag.max = 400, lwd = .5)
+
+# Histogram and qq plot:
+hist(Day_Ahead_Prices$Return, breaks = 5,  main = "Histogram DA Ret.", ylab="frequencies", xlab= "Load in MW",)
+qqnorm(Day_Ahead_Prices$Return, main="Q-Q Prices", pch=10, col="blue")
+qqline(Day_Ahead_Prices$Return, col="red", lwd=2, lty=2)  
+
+
+# STL decomposition
+ts <- ts(Day_Ahead_Prices$Return, frequency = 365)
+plot(ts, main = "Price Time Series", ylab = "Price", xlab = "Time")
+decomposed <- stl(ts, s.window = "periodic")
+
+# Plot the decomposed components
+plot(decomposed)
+
+
+
+```
+
+
+```{r}
+
+Day_Ahead_Prices <- Day_Ahead_Prices %>%
+  mutate(
+    lag_1 = lag(Return, 1),
+    lag_2 = lag(Return, 2),
+    lag_3 = lag(Return, 3),
+    lag_4 = lag(Return, 4),
+    lag_5 = lag(Return, 5),
+    lag_6 = lag(Return, 6), 
+    lag_7 = lag(Return, 7),
+    lag_8 = lag(Return, 8),
+    lag_9 = lag(Return, 9),
+    lag_10 = lag(Return, 10),
+    
+    # lag_1_fd = lag(returns_fd, 1),
+    # lag_2_fd = lag(returns_fd, 2),
+    # lag_3_fd = lag(returns_fd, 3),
+    # lag_4_fd = lag(returns_fd, 4),
+    # lag_5_fd = lag(returns_fd, 5),
+    # lag_6_fd = lag(returns_fd, 6),
+    # lag_7_fd = lag(returns_fd, 7),
+    # lag_8_fd = lag(returns_fd, 8),
+    # lag_9_fd= lag(returns_fd, 9),
+    # lag_10_fd = lag(returns_fd, 10),
+
+  )
+data_cleaned <- na.omit(Day_Ahead_Prices)
+data_cleaned <- data_cleaned %>% dplyr::select(-Price, -returns_fd, -sl) #Avoid return's first diff, as it have relation  with t, for predicting R(t)
+
+# Split the data into training and testing sets
+total_rows <- nrow(data_cleaned)
+train_size <- floor(0.7 * total_rows)
+train_df <- data_cleaned[1:train_size, ]
+test_df <- data_cleaned[(train_size + 1):total_rows, ]
+
+```
+
+
+
+```{r}
+# Algorithm to find AR model specification based on Information criteria (AIC/BIC). 
+
+get_combinations <- function(vars) {
+  n <- length(vars)
+  combs <- unlist(lapply(1:n, function(x) combn(vars, x, simplify = FALSE)), recursive = FALSE)
+  return(combs)
+}
+
+find_all_models <- function(response, data) {
+  vars <- colnames(data)[!colnames(data) %in% response]
+  combinations <- get_combinations(vars)
+  
+  model_list <- list()
+  
+  for (comb in combinations) {
+    formula <- as.formula(paste(response, "~", paste(comb, collapse = "+")))
+    model <- lm(formula, data = data)
+
+    aic <- AIC(model)
+    bic <- BIC(model)
+    
+    model_list[[length(model_list) + 1]] <- list(formula = formula, model = model, aic = aic, bic = bic)
+  }
+  
+  ordered_by_aic <- model_list[order(sapply(model_list, function(x) x$aic))]
+  ordered_by_bic <- model_list[order(sapply(model_list, function(x) x$bic))]
+  top_10_aic <- ordered_by_aic[1:min(10, length(ordered_by_aic))]
+  top_10_bic <- ordered_by_bic[1:min(10, length(ordered_by_bic))]
+  return(list(top_10_aic = top_10_aic, top_10_bic = top_10_bic))
+}
+
+data <- train_df %>% dplyr::select(-Start.Date)
+response <- "Return"
+all_models <- find_all_models(response, data)
+
+# Print top 10 models ordered by AIC
+cat("Top 10 Models ordered by AIC:\n")
+for (i in 1:length(all_models$top_10_aic)) {
+  cat("Model", i, ":", as.character(all_models$top_10_aic[[i]]$formula), "\n")
+  cat("AIC:", all_models$top_10_aic[[i]]$aic, "\n\n")
+}
+
+
+
+
+```
+
+#Task b
+```{r}
+
+smod1<- lm(Return ~ lag_3+ lag_4, data = train_df)
+aic_smodel1<- AIC(smod1)
+smod1summary<- summary(smod1)
+aic_smodel1
+smod1summary
+
+
+
+library(dplyr)
+library(forecast)
+
+# Assuming train_df and test_df are already defined and best_model is selected
+
+# Generate forecasts for the test data
+required_columns <- names(coef(smod1))[-1]  # Get the names of the predictors used in the best model
+test_df <- test_df %>%dplyr::select(all_of(required_columns), Return) %>%
+  na.omit()
+
+# Predict returns using the fitted model
+forecasts <- predict(smod1, newdata = test_df)
+
+# Calculate MSFE
+actual_returns <- test_df$Return
+msfe <- mean((actual_returns - forecasts)^2)
+
+# Print MSFE
+cat("Mean Squared Forecast Error (MSFE):", msfe, "\n")
+
+# Plot the forecasts together with the actual returns
+plot(actual_returns, type = "l", col = "blue", ylim = range(c(actual_returns, forecasts)), ylab = "Returns", xlab = "Time", main = "Actual vs Forecasted Returns")
+lines(forecasts, col = "red")
+legend("topleft", legend = c("Actual Returns", "Forecasted Returns"), col = c("blue", "red"), lty = 1)
+
+
+```
+
+
+```{r}
+
+url <- paste("https://archive-api.open-meteo.com/v1/archive?latitude=52.52,53.55,48.13,50.93,50.11,51.05,51.22,53.07,47.99,53.86","&longitude=13.41,9.99,11.58,6.96,8.68,13.73,6.77,8.80,7.84,10.68&start_date=2015-01-01&",
+             "end_date=2024-03-15&hourly=temperature_2m&timezone=Europe%2FBerlin", sep="")
+
+response <- GET(url)
+
+temperature <- content(response, "parsed")
+dfs <- list()
+for(item in temperature){
+  df <- data.frame(Start.Date = unlist(item$hourly$time), temperature = unlist(item$hourly$temperature_2m))
+  dfs <- c(dfs, list(df))
+}
+
+
+temperature_data <- bind_rows(dfs)
+temperature_data$Start.Date <- ymd_hm(temperature_data$Start.Date)
+
+temperature_data <- temperature_data %>% group_by(Start.Date) %>% summarise(temp = mean(temperature))
+
+
+```
+
+```{r}
+
+predictors_bd <- readRDS("C:/Users/USER/Downloads/predictors (2).rds")
+predictors_bd <- predictors_bd[, !(names(predictors_bd) == "Hourly_Weather")]
+predictors_bd <- merge(temperature_data, predictors_bd, by = "Start.Date", all = TRUE)
+
+
+```
+
+#Normalization functions
+```{r}
+#install.packages("bestNormalize")
+library(car)
+library(bestNormalize)
+normalize <- function(df, predictors) {
+  means <- sapply(df[predictors], mean, na.rm = TRUE)
+  sds <- sapply(df[predictors], sd, na.rm = TRUE)
+  
+  df_normalized <- df
+  
+  for (pred in predictors) {
+    df_normalized[[pred]] <- (df[[pred]] - means[pred]) / sds[pred]
+  }
+  
+  return(df_normalized)
+}
+
+normalize_yeo_johnson <- function(df, predictors) {
+   # Extract the subset of predictors
+  df_subset <- df[predictors]
+  
+  # Use preProcess with method = "range" for normalization
+  preproc <- preProcess(df_subset, method = c("YeoJohnson"))
+  
+  # Apply the transformation to the data frame
+  df_normalized <- predict(preproc, newdata = df_subset)
+  df_normalized
+  # Replace original columns with normalized columns in the original data frame
+  df[predictors] <- df_normalized
+  
+  return(df)
+}
+
+demean <- function(df, exclude_columns) {
+  for (col in colnames(df)) {
+    if (!(col %in% exclude_columns)) {
+      df[[col]] <- df[[col]] - mean(df[[col]], na.rm = TRUE)
+    }
+  }
+  return(df)
+}
+
+```
+
+
+
+#Create lagged version for all external predictors
+```{r}
+
+merged_df <- merge(main_df, predictors_bd, by = "Start.Date", all = TRUE)
+merged_df$Start.Date <- as.POSIXct(merged_df$Start.Date, format = "%Y-%m-%d %H:%M:%S")
+merged_df <- merged_df %>% filter(Start.Date >= as.POSIXct("2015-01-05 01:00:00") & Start.Date <= as.POSIXct("2024-03-15 23:00:00"))
+
+create_lagged_columns <- function(df, selected_columns, lag_numbers) {
+  lagged_df <- df  # Create a copy of the original data frame
+  
+  # Iterate over each selected column
+  for (col_name in selected_columns) {
+    # Iterate over each lag number
+    for (lag_number in lag_numbers) {
+      # Create lagged column name
+      lagged_col_name <- paste0(col_name, "_lag_", lag_number)
+      
+      # Create lagged column using the lag function
+      lagged_df[[lagged_col_name]] <- lag(df[[col_name]], lag_number)
+    }
+  }
+  
+  return(lagged_df)
+}
+
+
+exclude_columns <- c("Price","Start.Date", "Return","returns_fd")  # List of columns to exclude
+selected_columns <- setdiff(colnames(merged_df), exclude_columns)
+#merged_df <- normalize_yeo_johnson(merged_df, selected_columns)
+
+lag_numbers <- list(1) 
+lagged_data <- create_lagged_columns(merged_df, selected_columns, lag_numbers)  #call the function
+
+# Identify and count the lagged columns
+original_columns <- colnames(merged_df)
+columns_to_keep <- c("Start.Date","Return")  # Specify columns to keep, e.g., "Return"
+
+# Select columns to keep in lagged_data
+lagged_data_1 <- lagged_data[, c(columns_to_keep, setdiff(colnames(lagged_data), original_columns))]
+
+```
+
+
+#Fit model for each predictors to[redict return(task c)
+
+```{r}
+# lagged_data_1 <- lagged_data_1 %>%
+#   mutate(
+#     lag_3 = lag(Return, 3),
+#     lag_4 = lag(Return, 4),
+#     
+#     
+#   )
+
+# Split the data into training and testing sets
+lagged_data_1<- na.omit(lagged_data_1)
+total_rows <- nrow(lagged_data_1)
+train_size <- floor(0.7 * total_rows)
+train_df <- lagged_data_1[1:train_size, ]
+test_df <- lagged_data_1[(train_size + 1):total_rows, ]
+
+
+######################scaling####################
+# Step 1: Normalize Training Data with scaling
+# exclude_columns <- c("Start.Date", "Return")  # Add any other columns you want to exclude
+# selected_columns <- setdiff(colnames(train_df), exclude_columns)
+# train_df[selected_columns] <- scale(train_df[selected_columns])
+# test_df[selected_columns] <- scale(test_df[selected_columns],
+#                                               center = attr(scale(train_df[selected_columns]), "scaled:center"),
+#                                               scale = attr(scale(train_df[selected_columns]), "scaled:scale"))
+
+
+
+# # Step 2: Normalize Training Data with yeo johnson
+# exclude_columns <- c("Start.Date", "Return")  # Add any other columns you want to exclude
+# selected_columns <- setdiff(colnames(train_df), exclude_columns)
+# train_df <- normalize_yeo_johnson(train_df, selected_columns)
+# test_df <- normalize_yeo_johnson(test_df, selected_columns)
+# 
+# 
+# 
+# # Step 2: Normalize Training Data with yeo johnson
+# exclude_columns <- c("Return", "Start.Date", "lag_3", "lag_4")
+# train_df <- demean(train_df, exclude_columns)
+# test_df <- demean(test_df, exclude_columns)
+
+
+# Load necessary library
+library(caret)
+
+# Assuming you have your actual datasets train_df and test_df already loaded or defined
+
+# Columns to exclude from scaling (like the target variable)
+exclude_columns <- c("Start.Date","Return")  # Adjust this list as needed
+
+# Select columns for scaling (all numeric predictors)
+selected_columns <- setdiff(names(train_df), exclude_columns)
+
+# Define pre-processing method
+preproc <- preProcess(train_df[selected_columns], method = c("center", "scale"))
+
+# Apply the pre-processing to both train and test datasets
+train_df_scaled <- predict(preproc, train_df[selected_columns])
+test_df_scaled <- predict(preproc, newdata = test_df[selected_columns])
+
+# Replace scaled columns in the original datasets
+train_df[selected_columns] <- train_df_scaled
+test_df[selected_columns] <- test_df_scaled
+
+# Check the updated datasets
+print(head(train_df))
+print(head(test_df))
+
+
+######################scaling####################
+
+predictors_list <- list(
+  c("temp_lag_1"),
+  c("Load_lag_1"),
+  c("Carbon_Futures_lag_1"),
+  c("Total_Fossil_Output_lag_1"),
+  c("Total_Renewable_Output_lag_1"),
+  c("Nuclear_Output_lag_1"),
+  c("Net_Export_lag_1"),
+  c("WS_Forecast_lag_1"),
+  c("Allocated_Trans_Cap_lag_1"),
+  c("Remaining_Capacity_lag_1"),
+  c("Gas_Futures_lag_1")
+)
+
+results <- list()
+forecasts <- list()
+for (i in seq_along(predictors_list)) {
+  predictor_set <- predictors_list[[i]]
+  formula <- as.formula(paste("Return ~", paste(predictor_set, collapse = " + ")))
+  
+  model <- lm(formula, data = train_df)
+ 
+  # Store the model in the results list
+  results[[i]] <- model
+  
+  # Generate predictions
+  pred <- predict(model, newdata = test_df)
+  
+  # Ensure the lengths match
+  if (length(pred) == nrow(test_df)) {
+    forecasts[[i]] <- pred
+  } else {
+    cat("Length mismatch for predictor set:", paste(predictor_set, collapse = ", "), "\n")
+  }
+}
+# Calculate Mean Squared Forecast Error (MSFE)
+rmsfe <- sapply(forecasts, function(forecast) {
+  sqrt(mean((test_df$Return - forecast)^2))
+})
+rmsfe
+# Find the best model based on the lowest MSFE
+best_model_index <- which.min(rmsfe)
+best_forecast <- forecasts[[best_model_index]]
+best_model_formula <- paste("Return ~ ", paste(predictors_list[[best_model_index]], collapse = " + "))
+
+cat("Best model formula:", best_model_formula, "\n")
+cat("Best model MSFE:", rmsfe[best_model_index], "\n")
+```
+
+#Showing forcastes for OLS model for each predictors with actual return
+```{r}
+# Install and load necessary packages
+# install.packages("ggplot2")
+# install.packages("reshape2")
+library(ggplot2)
+library(reshape2)
+
+# Define the named list of predictors
+predictors_list <- list(
+  temp = c("temp_lag_1"),
+  Load = c("Load_lag_1"),
+  Carbon_Futures = c("Carbon_Futures_lag_1"),
+  Total_Fossil_Output = c("Total_Fossil_Output_lag_1"),
+  Total_Renewable_Output = c("Total_Renewable_Output_lag_1"),
+  Nuclear_Output = c("Nuclear_Output_lag_1"),
+  Net_Export = c("Net_Export_lag_1"),
+  WS_Forecast = c("WS_Forecast_lag_1"),
+  Allocated_Trans_Cap = c("Allocated_Trans_Cap_lag_1"),
+  Remaining_Capacity = c("Remaining_Capacity_lag_1"),
+  Gas_Futures = c("Gas_Futures_lag_1")
+)
+
+# Assuming `plot_df` already contains the combined actual returns and forecasts
+
+# Rename forecast columns to match predictor names
+names(plot_df)[grep("^Forecast_", names(plot_df))] <- names(predictors_list)
+
+# Select only relevant columns for plotting
+plot_df_selected <- plot_df[, c("Start.Date", "Return", names(predictors_list))]
+
+# Reshape the data for plotting
+plot_long <- melt(plot_df_selected, id.vars = c("Start.Date", "Return"), variable.name = "Predictor", value.name = "Forecast")
+
+# Plot the actual returns and forecasts
+ggplot(plot_long, aes(x = Start.Date)) +
+  geom_line(aes(y = Return, color = "Actual Return")) + 
+  geom_line(aes(y = Forecast, color = Predictor)) +
+  labs(title = "Actual Returns and Forecasts",
+       x = "Date",
+       y = "Return",
+       color = "Series") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+
+```
+#Rolling window 
+
+```{r}
+predictors_list <- list(
+  temp = c("temp_lag_1")
+
+)
+# Function to apply rolling window forecasting for one model
+rolling_forecast_single <- function(train_df, test_df, predictor, window_size) {
+  total_test <- nrow(test_df)
+  forecasts <- numeric(total_test)
+  
+  train_end <- nrow(train_df)  # Initial training end index
+  
+  for (j in 1:total_test) {
+    train_start <- max(1, train_end - window_size + 1)
+    train_data <- lagged_data_1[train_start:train_end, ]
+    
+    formula <- as.formula(paste("Return ~", predictor))
+    model <- lm(formula, data = train_data)
+    
+    forecasts[j] <- predict(model, newdata = test_df[j, , drop = FALSE])
+    
+    train_end <- train_end + 1
+  }
+  
+  return(forecasts)
+}
+
+# Initialize lists to store results
+forecasts_list <- list()
+rmse_list <- numeric(length(predictors_list))
+window_size <- train_size  # You can adjust the window size as needed
+
+# Loop over each predictor in the predictors_list
+for (i in seq_along(predictors_list)) {
+  predictor <- predictors_list[[i]][1]  # Extract the predictor name
+  forecasts <- rolling_forecast_single(train_df, test_df, predictor, window_size)
+  
+  # Store the forecasts
+  forecasts_list[[i]] <- forecasts
+  
+  # Calculate RMSE
+  actual_values <- test_df$Return
+  rmse <- sqrt(mean((actual_values - forecasts)^2))
+  rmse_list[i] <- rmse
+}
+
+# Create a data frame to store RMSE results for each predictor
+rmse_df <- data.frame(Predictor = unlist(predictors_list), RMSE = rmse_list)
+print(rmse_df)
+
+```
+#Finding window size by analyzing trend (daily weekly yearly)
+```{r}
+library(ggplot2)
+library(lubridate)
+
+# Assume df is your data frame with a datetime column and the target variable
+lagged_data_1$Start.Date <- as.POSIXct(lagged_data_1$Start.Date)
+
+# Assuming your_data is the dataframe containing your time series data
+# and 'Return' is the target variable
+ts_data <- ts(lagged_data_1$Return, frequency = 24)  # Adjust frequency based on your data
+# Perform decomposition
+decomp <- decompose(ts_data, type = "multiplicative")
+plot(decomp)
+# Extract and plot the seasonal component separately
+seasonal_pattern <- decomp$figure
+plot(seasonal_pattern, type = "o", col = "blue", main = "Seasonal Pattern",
+     xlab = "Time", ylab = "Seasonal Effect daily")
+
+
+ts_data <- ts(lagged_data_1$Return, frequency = 168)  # Adjust frequency based on your data
+# Perform decomposition
+decomp <- decompose(ts_data, type = "multiplicative")
+plot(decomp)
+# Extract and plot the seasonal component separately
+seasonal_pattern <- decomp$figure
+plot(seasonal_pattern, type = "o", col = "blue", main = "Seasonal Pattern",
+     xlab = "Time", ylab = "Seasonal Effect weekly")
+
+# # Plot weekly patterns
+# ggplot(lagged_data_1, aes(x = wday(Start.Date), y = Return)) +
+#   geom_line(stat = "summary", fun = "mean") +
+#   labs(title = "Average Return by Day of Week", x = "Day", y = "Average Return")
+
+
+
+
+```
+
+
+```{r}
+# Define rolling forecast function for one predictor using rollapplyr
+rolling_forecast_single <- function(train_df, test_df, predictor, window_size) {
+  total_test <- nrow(test_df)
+  
+  # Store the forecasts
+  forecasts <- numeric(total_test)
+  
+  # Create a data frame to hold training and testing data
+  combined_df <- bind_rows(train_df, test_df)
+  
+  # Rollapply function to fit the model and predict
+  rollapplyr(1:nrow(test_df), width = 1, FUN = function(idx) {
+    train_end <- nrow(train_df) + idx - 1
+    train_start <- max(1, train_end - window_size + 1)
+    train_data <- combined_df[train_start:train_end, ]
+    
+    # Fit the model
+    formula <- as.formula(paste("Return ~", predictor))
+    model <- lm(formula, data = train_data)
+    
+    # Predict for the current test observation
+    new_data <- test_df[idx, , drop = FALSE]
+    new_data <- setNames(new_data, colnames(train_data))  # Ensure column names match
+    
+    forecast_value <- predict(model, newdata = new_data)
+    
+    # # Print for debugging
+    # cat("Train data for idx =", idx, "\n")
+    # print(train_data)
+    # cat("New data for idx =", idx, "\n")
+    # print(new_data)
+    # cat("Forecast for idx =", idx, ":", forecast_value, "\n")
+    
+    # Return the forecast value
+    forecast_value
+  }, by.column = FALSE)
+}
+
+
+# Define your predictor
+predictor <- "Allocated_Trans_Cap_lag_1"
+window_size <- 365*5*24 # Using the entire training set as window size
+
+# Generate forecasts using the rolling window approach
+forecasts <- rolling_forecast_single(train_df, test_df, predictor, window_size)
+
+# Ensure forecasts is a vector
+forecasts <- as.vector(forecasts)
+ 
+# Calculate RMSE
+actual_values <- test_df$Return
+rmse <- sqrt(mean((actual_values - forecasts)^2))
+print(paste("RMSE:", rmse))
+
+# Print the forecasts for verification
+print(forecasts)
+
+
+```
+
+#Non-Stationary Predictors:Carbon_Futures (p-value: 0.4674), Gas_Futures (p-value: 0.5198)
+#To make stationary we can take 1st diff of them
+
+```{r}
+#Check stationarity of each predictors
+# Load necessary library
+library(tseries)
+predictors_bd<- na.omit(predictors_bd)
+# List of predictors
+predictors <- c("Load", "Hourly_Weather", "Carbon_Futures", "Total_Fossil_Output", 
+                "Total_Renewable_Output", "Nuclear_Output", "Net_Export", 
+                "WS_Forecast", "Allocated_Trans_Cap", "Remaining_Capacity", "Gas_Futures")
+
+# Perform the ADF test for each predictor and print the results
+adf_results <- lapply(predictors, function(pred) {
+  predictor_data <- na.omit(predictors_bd[[pred]])
+  if (length(predictor_data) < 2) {
+    return(list(predictor = pred, p_value = NA, statistic = NA, message = "Not enough data"))
+  }
+  
+  adf_test <- adf.test(predictor_data, alternative = "stationary")
+  list(predictor = pred, p_value = adf_test$p.value, statistic = adf_test$statistic)
+})
+
+# Print the results
+for (result in adf_results) {
+  cat("ADF Test for", result$predictor, ":\n")
+  cat(" - p-value:", result$p_value, "\n")
+  cat(" - Dickey-Fuller statistic:", result$statistic, "\n")
+  if (!is.null(result$message)) {
+    cat(" - Note:", result$message, "\n")
+  }
+  cat("\n")
+}
+
+
+
+
+```
+
+```{r}
+
+predictors_bd <- predictors_bd %>%
+  mutate(
+    Carbon_Futures_fd = diff(Carbon_Futures, lag = 1, differences = 1),
+    Gas_Futures_fd = diff(Gas_Futures, lag = 1, differences = 1)
+  )
+predictors_bd <- predictors_bd %>%
+  mutate(
+    lag_Carbon_Futures = lag(Carbon_Futures, 1),
+    lag_Carbon_Futures_fd = lag(Carbon_Futures_fd, 1),
+    lag_Gas_Futures = lag(Gas_Futures, 1),
+    lag_Gas_Futures_fd = lag(Gas_Futures_fd, 1),
+    
+    lag_Carbon_Futures = lag(Load, 1),
+    lag_Carbon_Futures_fd = lag(Carbon_Futures_fd, 1),
+    lag_Gas_Futures = lag(Gas_Futures, 1),
+    lag_Gas_Futures_fd = lag(Gas_Futures_fd, 1),
+    
+  )
+
+
+
+
+predictors <- colnames(train_df)[colnames(train_df) != "Return"]
+results <- list()
+
+for (predictor in predictors) {
+  formula <- as.formula(paste("Return ~", predictor))
+  model <- lm(formula, data = train_df)
+  
+  # Generate forecasts for the test data
+  forecasts <- predict(model, newdata = test_df)
+  
+  # Calculate MSFE
+  actual_returns <- test_df$Return
+  msfe <- mean((actual_returns - forecasts)^2)
+  
+  # Store results
+  results[[predictor]] <- list(
+    model = model,
+    forecasts = forecasts,
+    msfe = msfe
+  )
+}
+
+# Find the best model based on MSFE
+best_predictor <- names(results)[which.min(sapply(results, function(x) x$msfe))]
+best_model <- results[[best_predictor]]
+
+cat("Best predictor:", best_predictor, "\n")
+cat("Best model MSFE:", best_model$msfe, "\n")
+```
+
+```{r}
+
+
+
+```
+
