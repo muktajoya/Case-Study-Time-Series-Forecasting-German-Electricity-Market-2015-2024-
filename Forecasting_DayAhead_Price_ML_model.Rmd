@@ -1,0 +1,1642 @@
+---
+title: "Final_Assignment2"
+author: "Mukta Ghosh"
+date: "2024-06-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+# Housekeeping: Get packages and libraries, load data-set, set directory:
+# Setup
+set.seed(1234) # Might be needed
+options(scipen = 999, digits = 10) # Adjust to see different decimal points
+install_load <- function(packages) {
+  for (package in packages) {
+    if (!require(package, character.only = TRUE)) {
+      install.packages(package)
+      library(package, character.only = TRUE)
+    }
+  }
+}
+packages <- c("ggplot2", "dplyr", "lubridate", "tidyr", "forecast", "stats", "rpart","zoo", "tseries", "readr", "urca", "ggplot2","tidyverse", "rstatix", "olsrr", "ggfortify", "leaps", "lubridate", "dplyr", "forecast", "stats", "stlplus", "dynlm", "RMySQL", "SparseM", "quantreg", "greybox", "psych", "Hmisc", "urca", "zoo", "rugarch", "rpart.plot", "forecast", "rpart", "quantmod",  "xgboost", "stats", "fGarch", "readr","gplots","keras") # Add the desired packages here
+#install_load(packages) # Custom function to install and load packages
+library(purrr)
+library(DBI)
+library(readr)
+library(dplyr)
+library(quantreg)
+library(SparseM)
+library(mgcv)
+#library(gamlss)
+#library(gamlss.dist)
+library(Hmisc)
+library(psych)
+library(zoo)
+library(stats)
+library(tseries)
+library(urca)
+library(readr)
+library(stats)
+library(ggplot2)
+library(lattice)
+library(lubridate)
+library(data.table)
+library(dplyr)
+library(tidyverse)
+library(rstatix)
+library(ggplot2)
+library(olsrr)
+library(MASS)
+library(ggfortify)
+library(ggplot2)
+library(readxl)
+library(magrittr)
+library(corrplot)
+library(broom)
+library(leaps)
+library(knitr)
+library(forecast)
+library(stlplus)
+library(dynlm)
+library(gridExtra)
+library(Hmisc)
+library(psych)
+library(forecast)
+library(rpart)
+library(quantmod)
+library(caret)
+library(xgboost)
+library(keras)
+library(httr)
+library(gplots)
+
+library(keras)
+library(reticulate)
+#install_keras()
+
+setwd("D:/Dort data science/Case Study/Project 2") #Set this to where data sets are
+predictors_bd <- readRDS("C:/Users/USER/Downloads/predictors (2).rds")
+
+Day_Ahead_Prices <- read.csv("D:/Dort data science/Case Study/Project 2/Day-ahead_prices_201501010000_202404020000_Hour.csv", sep=";")
+
+Day_Ahead_Prices <- Day_Ahead_Prices[, c(1, 3, 16)]
+colnames(Day_Ahead_Prices) <- c("Start.Date", "DE_LU", "DE_AT_LU")
+Day_Ahead_Prices$Start.Date <- mdy_hm(Day_Ahead_Prices$Start.Date)
+ex_reg<- readRDS("D:/Dort data science/Case Study/Project 2/selected_external_lagged_data_and_diff.rds")
+
+
+```
+
+
+
+```{r}
+# Data Cleaning and adjustments:
+# Following function converts "-" into NA
+
+clean_data <- function(df) {
+  df <- df %>%
+    mutate(across(where(is.character), ~if_else(. == "-", NA_character_, .)))
+
+  return(df)
+}
+Day_Ahead_Prices <- clean_data(Day_Ahead_Prices)
+
+
+# DE_AT_LU discontinued after October 1st 2018, combine the columns into Price and remove the old columns
+Day_Ahead_Prices <- Day_Ahead_Prices %>%
+  mutate(Price = if_else(Start.Date < as.Date("2018-10-01"), DE_AT_LU, DE_LU))
+Day_Ahead_Prices <- Day_Ahead_Prices[, !(names(Day_Ahead_Prices) %in% c("DE_LU", "DE_AT_LU"))]
+# Character to numeric
+Day_Ahead_Prices <- Day_Ahead_Prices %>%
+  mutate(Price = as.numeric(Price))
+Day_Ahead_Prices_noDST <- Day_Ahead_Prices
+
+# Day ahead prices DST and other adjustments:
+
+adjust_time_series <- function(df) {
+  df <- df %>%filter(Start.Date >= as.POSIXct("2015-01-05 01:00:00") & Start.Date <= as.POSIXct("2024-03-16 00:00:00"))
+
+  df <- df %>%
+    mutate(
+      Year = year(Start.Date),
+      Month = month(Start.Date),
+      Day = day(Start.Date),
+      Hour = hour(Start.Date),
+      Duplicate_Hour_Flag = ifelse(Month == 10 & Hour == 2, 1, 0)
+    ) %>%
+    group_by(Year, Month, Day, Hour) %>%
+    mutate(Occurrence = row_number()) %>%
+    ungroup() %>%
+    filter(!(Month == 10 & Hour == 2 & Occurrence == 2)) %>%
+    dplyr::select(-c(Year, Month, Day, Hour, Duplicate_Hour_Flag, Occurrence))
+
+  march_data <- df %>%
+    filter(month(Start.Date) == 3) %>%
+    arrange(Start.Date) %>%
+    mutate(Next_Hour = lead(hour(Start.Date))) %>%
+    filter(hour(Start.Date) == 1 & Next_Hour == 3)
+
+  missing_rows <- march_data %>%
+    mutate(Start.Date = Start.Date + hours(1))
+
+  cols <- setdiff(names(df), "Start.Date")
+  for (col in cols) {
+    missing_rows[[col]] <- march_data[[col]]
+  }
+
+  df <- bind_rows(df, missing_rows) %>%
+    arrange(Start.Date) %>%
+    dplyr::select(-Next_Hour)
+
+  return(df)
+}
+
+Day_Ahead_Prices <- adjust_time_series(Day_Ahead_Prices)
+
+return_transform <- function(series){
+  return_series <- numeric(length(series)-1)
+  for(i in 2:length(series)){
+    if(series[i] != 0 & series[i-1] != 0){
+      return_series[i-1] <- (series[i] - series[i-1])/series[i-1]
+    }
+    else {return_series[i-1] <- NA}
+  }
+  return(return_series)
+}
+
+
+
+Day_Ahead_Prices$Return <- c(NA, return_transform(Day_Ahead_Prices$Price))
+#Day_Ahead_Prices$Return[is.na(Day_Ahead_Prices$Return)] <- 0
+Day_Ahead_Prices$returns_fd <- c(NA, diff(Day_Ahead_Prices$Return))
+#Day_Ahead_Prices$returns_fd[is.na(Day_Ahead_Prices$returns_fd)] <- 0
+
+```
+
+
+#Temperature  data fetch
+
+
+```{r}
+url <- paste("https://archive-api.open-meteo.com/v1/archive?latitude=52.52,53.55,48.13,50.93,50.11,51.05,51.22,53.07,47.99,53.86","&longitude=13.41,9.99,11.58,6.96,8.68,13.73,6.77,8.80,7.84,10.68&start_date=2015-01-01&",
+             "end_date=2024-03-15&hourly=temperature_2m&timezone=Europe%2FBerlin", sep="")
+
+response <- GET(url)
+
+temperature <- content(response, "parsed")
+dfs <- list()
+for(item in temperature){
+  df <- data.frame(Start.Date = unlist(item$hourly$time), temperature = unlist(item$hourly$temperature_2m))
+  dfs <- c(dfs, list(df))
+}
+
+
+temperature_data <- bind_rows(dfs)
+temperature_data$Start.Date <- ymd_hm(temperature_data$Start.Date)
+
+temperature_data <- temperature_data %>% group_by(Start.Date) %>% summarise(temp = mean(temperature))
+
+saveRDS(temperature_data, file = "D:/Dort data science/Case Study/Project 2/temperature.rds")
+```
+
+
+
+
+```{r}
+# Data dynamics:
+describe.by(Day_Ahead_Prices)
+describe.by(predictors)
+
+Day_Ahead_Prices <- na.omit(Day_Ahead_Prices)
+# Housekeeping first: Check the dynamics of the data:
+
+# Lets fit a trend and check residuals: 
+
+sl<- seq(length(Day_Ahead_Prices$Price))
+Day_Ahead_Prices$sl <-sl
+m1_trend <- lm( Price~ poly(sl,2), data = Day_Ahead_Prices)
+price_trend<- predict(m1_trend)
+
+# Summary of m1_trend
+summary(m1_trend)
+sqrm1_trend<- m1_trend$residuals^2
+se_m1_trend<-  sum(sqrm1_trend)/m1_trend$df.residual
+
+# Print and check the evaluation metrics:
+cat("TSE",        se_m1_trend^(1/2), "\n")
+cat("TVar",       se_m1_trend, "\n")
+
+
+# Look into the price sereis dynamics:
+par(mfrow = c(2, 3))
+
+# Plot the series and add a trend line
+plot(Day_Ahead_Prices$Start.Date, Day_Ahead_Prices$Price, main = "Day-Ahead Prices", ylab="EUR", xlab= "Date", type="l", lwd=.1)
+lines(Day_Ahead_Prices$Start.Date, price_trend, col="red", lwd=2)
+
+
+# Plot acf and PACF:
+#acf(Day_Ahead_Prices$Price, main = "acf of DA Prices", ylab="acf", xlab= "Lags", lag.max = 400, lwd = .5)
+pacf(Day_Ahead_Prices$Price, main = "pacf of DA Prices", ylab="pacf", xlab= "Lags", lag.max = 400, lwd = .5)
+
+# Histogram and qq plot:
+hist(Day_Ahead_Prices$Price, breaks = 100, main = "Histogram DA Prices", ylab="frequencies", xlab= "Load in MW",)
+
+
+# Look in to the return sereis dynamics:
+
+par(mfrow = c(2, 3))
+
+# Plot the series and add a trend line
+plot(Day_Ahead_Prices$Start.Date, Day_Ahead_Prices$Return, main = "Day-Ahead Ret.", ylab="EUR", xlab= "Date", type="l", lwd=.5)
+lines(Day_Ahead_Prices$Start.Date, price_trend, col="red", lwd=2)
+
+
+pacf(Day_Ahead_Prices$Return, main = "pacf of DA Ret", ylab="pacf", xlab= "Lags", lag.max = 400, lwd = .5)
+
+# Histogram and qq plot:
+hist(Day_Ahead_Prices$Return, breaks = 5,  main = "Histogram DA Ret.", ylab="frequencies", xlab= "Load in MW",)
+qqnorm(Day_Ahead_Prices$Return, main="Q-Q Prices", pch=10, col="blue")
+qqline(Day_Ahead_Prices$Return, col="red", lwd=2, lty=2)  
+
+# ADF Test
+
+adf.test(Day_Ahead_Prices$Price)
+adf.test(Day_Ahead_Prices$Return)
+
+```
+
+
+```{r}
+
+
+
+plot(Day_Ahead_Prices$Start.Date, Day_Ahead_Prices$Return, type="l")
+
+one_month_data <- Day_Ahead_Prices %>%
+  filter(format(Start.Date, "%Y-%m") == "2017-01")
+
+plot1 <- ggplot(one_month_data, aes(x = Start.Date, y = Return)) +
+  geom_line(color = "blue") +
+  labs(title = "Time Series Plot of Returns for January 2016", x = "Date", y = "Return") +
+  theme_minimal()
+
+# Plot 2: Time series plot of the Price values
+plot2 <- ggplot(one_month_data, aes(x = Start.Date, y = Price)) +
+  geom_line(color = "red") +
+  labs(title = "Time Series Plot of Prices for January 2016", x = "Date", y = "Price") +
+  theme_minimal()
+# Arrange the plots in one frame
+grid.arrange(plot1, plot2, ncol = 1)
+```
+
+#Lag relationship of Return series
+#Column Return has relationships:      lag_1, lag_2, lag_10, lag_1_fd, lag_2_fd, lag_3_fd, dlag_1, dlag_1_fd 
+
+```{r}
+
+# Find out most lag relationship in Return series
+
+
+Day_Ahead_Prices <- Day_Ahead_Prices %>%
+  mutate(
+    lag_1 = lag(Return, 1),
+    lag_2 = lag(Return, 2),
+    lag_3 = lag(Return, 3),
+    lag_4 = lag(Return, 4),
+    lag_5 = lag(Return, 5),
+    lag_6 = lag(Return, 6), 
+    lag_7 = lag(Return, 7),
+    lag_8 = lag(Return, 8),
+    lag_9 = lag(Return, 9),
+    lag_10 = lag(Return, 10),
+    
+    lag_1_fd = lag(returns_fd, 1),
+    lag_2_fd = lag(returns_fd, 2),
+    lag_3_fd = lag(returns_fd, 3),
+    lag_4_fd = lag(returns_fd, 4),
+    lag_5_fd = lag(returns_fd, 5),
+    lag_6_fd = lag(returns_fd, 6), 
+    lag_7_fd = lag(returns_fd, 7),
+    lag_8_fd = lag(returns_fd, 8),
+    lag_9_fd= lag(returns_fd, 9),
+    lag_10_fd = lag(returns_fd, 10),
+    
+    dlag_1 = lag(Return, 24),
+    dlag_1_fd = lag(returns_fd, 24)
+  )
+data_cleaned <- na.omit(Day_Ahead_Prices)
+data_cleaned <- data_cleaned %>% dplyr::select(-Price, -returns_fd) #Avoid return's first diff, as it have relation  with t, for predicdicting R(t)
+
+# Split the data into training and testing sets
+total_rows <- nrow(data_cleaned)
+train_size <- floor(0.7 * total_rows)
+train_df <- data_cleaned[1:train_size, ]
+test_df <- data_cleaned[(train_size + 1):total_rows, ]
+
+
+
+
+# Compute Spearman's rank correlation coefficient matrix
+train_df <- train_df[sapply(train_df, is.numeric)]  #Numeric convertion
+train_df <-na.omit(train_df)
+spearman_cor <- cor(train_df, method = "spearman")
+spearman_cor[spearman_cor < 0] <- 0
+
+
+threshold <- 0.1
+relevant_correlations <- which(abs(spearman_cor) > threshold & spearman_cor < 1, arr.ind = TRUE)
+column_relationships <- vector("list", ncol(train_df))
+
+#Store Relationships in a List:
+for (i in 1:nrow(relevant_correlations)) {
+  row_index <- relevant_correlations[i, "row"]
+  col_index <- relevant_correlations[i, "col"]
+  column_relationships[[col_index]] <- c(column_relationships[[col_index]], colnames(train_df)[row_index])
+}
+for (i in 1:length(column_relationships)) {
+  cat("Column", colnames(train_df)[i], "has relationships:     ", paste(column_relationships[[i]], collapse = ", "), "\n")
+}
+
+
+
+columns_to_select_try <- c("Start.Date", "Return", "lag_1", "lag_2", "lag_10", "lag_1_fd", "lag_2_fd", "lag_3_fd", "dlag_1", "dlag_1_fd"  )
+
+# Select the specified columns from lagged_data
+data_cleaned <- data_cleaned %>% dplyr::select(all_of(columns_to_select_try))
+```
+#External selection
+#Merge external with return to find relationship
+```{r}
+predictors_bd <- readRDS("C:/Users/USER/Downloads/predictors (2).rds")
+predictors_bd <- predictors_bd[, !(names(predictors_bd) == "Hourly_Weather")]
+predictors_bd <- merge(temperature_data, predictors_bd, by = "Start.Date", all = TRUE)
+
+#colnames(predictors_bd)[colnames(predictors_bd) == "date"] <- "Start.Date"
+Day_Ahead_Prices_main_selection <- Day_Ahead_Prices %>% dplyr::select("Start.Date","Price", "Return","returns_fd")
+merged_df <- merge(Day_Ahead_Prices_main_selection, predictors_bd, by = "Start.Date", all = TRUE)
+
+merged_df$Start.Date <- as.POSIXct(merged_df$Start.Date, format = "%Y-%m-%d %H:%M:%S")
+merged_df <- merged_df %>% filter(Start.Date >= as.POSIXct("2015-01-05 01:00:00") & Start.Date <= as.POSIXct("2024-03-15 23:00:00"))
+```
+
+#Cleaning the data
+```{r}
+ NA_checking_per_columns <- function(x) {
+  # Initialize an empty vector to store the count of missing values per column
+  missing_counts <- numeric(length(x))
+  
+  # Loop over each column in the x frame
+  for (i in seq_along(x)) {
+    # Count the number of missing values in the current column
+    missing_counts[i] <- sum(is.na(x[[i]]))
+  }
+  
+  # Create a named vector with column names as names and missing value counts as values
+  names(missing_counts) <- colnames(x)
+  
+  # Return the vector containing missing value counts per column
+  return(missing_counts)
+ }
+
+missing <- NA_checking_per_columns(merged_df)  #call the function
+missing
+
+# Remove columns where all values are either 0 or NA or both
+merged_df <- merged_df[, colSums(merged_df != 0 & !is.na(merged_df), na.rm = TRUE) > 0]
+
+library(zoo)
+# Replace NA values with the previous available values for every column
+for (col in names(merged_df)) {
+ 
+  
+  # Check if there are missing values in the column
+  if (any(is.na(merged_df[[col]]))) {
+    # Exclude the first row from NA check if it's the 'Return' column
+    if (col == "Return" ||col == "returns_fd" || col=="Price") {
+      # Skip the first row for 'Return' column
+       # Replace with appropriate initial value
+      
+    } else {
+      # Apply na.locf() only if there are non-NA values to carry forward
+      if (any(!is.na(merged_df[[col]]))) {
+        merged_df[[col]] <- na.locf(merged_df[[col]])
+      } else {
+        # Handle columns with no previous values appropriately
+           merged_df[[col]][is.na(merged_df[[col]])] <- 0
+      }
+    }
+  }
+}
+
+
+missing <- NA_checking_per_columns(merged_df)  #Checking again the missing values
+missing
+
+
+
+
+```
+
+
+#Merge external covariates and return
+
+
+```{r}
+
+
+create_lagged_columns <- function(df, selected_columns, lag_numbers) {
+  lagged_df <- df  # Create a copy of the original data frame
+  
+  # Iterate over each selected column
+  for (col_name in selected_columns) {
+    # Iterate over each lag number
+    for (lag_number in lag_numbers) {
+      # Create lagged column name
+      lagged_col_name <- paste0(col_name, "_lag_", lag_number)
+      
+      # Create lagged column using the lag function
+      lagged_df[[lagged_col_name]] <- lag(df[[col_name]], lag_number)
+    }
+  }
+  
+  return(lagged_df)
+}
+
+
+#merged_df <-merged_df[,1:36]
+exclude_columns <- c("Price","Start.Date")  # List of columns to exclude
+selected_columns <- setdiff(colnames(merged_df), exclude_columns)
+lag_numbers <- list(1,2,3)  # List of lag numbers
+lagged_data <- create_lagged_columns(merged_df, selected_columns, lag_numbers)  #call the function
+#lagged_data_1 <- create_lagged_columns(merged_df, selected_columns, lag_numbers)  #call the function
+# Identify and count the lagged columns
+original_columns <- colnames(merged_df)
+columns_to_keep <- c("Start.Date","Return","returns_fd")  # Specify columns to keep, e.g., "Return"
+
+# Select columns to keep in lagged_data
+lagged_data_1 <- lagged_data[, c(columns_to_keep, setdiff(colnames(lagged_data), original_columns))]
+
+
+
+```
+
+#Now we have df with Return(Y), and external covariateslag 1,2
+#Compute Spearman's rank correlation coefficient matrix  (set negetive relations as 0)
+```{r}
+# Compute Spearman's rank correlation coefficient matrix
+lagged_data <- lagged_data_1[sapply(lagged_data_1, is.numeric)]  #Numeric convertion
+lagged_data <-na.omit(lagged_data)
+
+spearman_cor <- cor(lagged_data, method = "spearman")
+# Set negative correlations to zero
+spearman_cor[spearman_cor < 0] <- 0
+
+
+
+# Set threshold (e.g., 0.5 for moderate correlation)
+threshold <- 0.1
+# Extract correlations above the threshold
+relevant_correlations <- which(abs(spearman_cor) > threshold & spearman_cor < 1, arr.ind = TRUE)
+# Create an empty list to store relationships
+column_relationships <- vector("list", ncol(lagged_data))
+
+
+
+# Loop through each relevant correlation and update the list
+for (i in 1:nrow(relevant_correlations)) {
+  row_index <- relevant_correlations[i, "row"]
+  col_index <- relevant_correlations[i, "col"]
+  # Add the related column to the list for the current column
+  column_relationships[[col_index]] <- c(column_relationships[[col_index]], colnames(lagged_data)[row_index])
+}
+# Print the list of relationships
+for (i in 1:length(column_relationships)) {
+  cat("Column", colnames(lagged_data)[i], "has relationships:     ", paste(column_relationships[[i]], collapse = ", "), "\n")
+}
+
+#Return_lag_1, Return_lag_2, returns_fd_lag_1, returns_fd_lag_2, returns_fd_lag_3, Net_Export_lag_3, WS_Forecast_lag_3, Allocated_Trans_Cap_lag_3 
+
+
+columns_to_select_try <- c("Start.Date" ,"Return", "returns_fd", "Return_lag_1", "Return_lag_2", "returns_fd_lag_1", "returns_fd_lag_2", "returns_fd_lag_3","Net_Export_lag_3", "WS_Forecast_lag_3","Allocated_Trans_Cap_lag_3" )
+
+# Select the specified columns from lagged_data
+lagged_data_selected_1 <- lagged_data_1 %>% dplyr::select(all_of(columns_to_select_try))
+```
+
+
+#Now check if all externals 1st diff 's lagged have relation with return
+```{r}
+
+
+#selected_columns <- setdiff(colnames(merged_df))
+#selected_merged_df <- merged_df[selected_columns]
+selected_merged_df <- merged_df
+
+# Calculate differences for selected columns
+for (col in selected_columns) {
+  selected_merged_df[[paste0(col, "_fd")]] <- c(NA, diff(selected_merged_df[[col]]))
+}
+selected_merged_df_1 <- selected_merged_df
+
+original_columns <- colnames(merged_df)
+columns_to_keep <- c("Start.Date","Return")  # Specify columns to keep, e.g., "Return"
+
+# Select columns to keep in lagged_data
+selected_merged_df_1 <- selected_merged_df_1[, c(columns_to_keep, setdiff(colnames(selected_merged_df_1), original_columns))]
+
+
+
+create_lagged_columns <- function(df, selected_columns, lag_numbers) {
+  lagged_df <- df  # Create a copy of the original data frame
+  
+  # Iterate over each selected column
+  for (col_name in selected_columns) {
+    # Iterate over each lag number
+    for (lag_number in lag_numbers) {
+      # Create lagged column name
+      lagged_col_name <- paste0(col_name, "_lag_", lag_number)
+      
+      # Create lagged column using the lag function
+      lagged_df[[lagged_col_name]] <- lag(df[[col_name]], lag_number)
+    }
+  }
+  
+  return(lagged_df)
+}
+
+exclude_columns <- c("Start.Date" ,"Return","returns_fd")  # List of columns to exclude
+selected_columns_1 <- setdiff(colnames(selected_merged_df_1), exclude_columns)
+lag_numbers <- list(1,2)  # List of lag numbers
+lagged_data_external_diff <- create_lagged_columns(selected_merged_df_1, selected_columns_1, lag_numbers)  #call the function
+
+
+# Identify and count the lagged columns
+original_columns <- colnames(selected_merged_df_1)
+columns_to_keep <- c("Return","Start.Date") 
+# Select columns to keep in lagged_data
+lagged_data_external_diff <- lagged_data_external_diff[, c(columns_to_keep, setdiff(colnames(lagged_data_external_diff), original_columns))]
+
+
+
+
+# Compute Spearman's rank correlation coefficient matrix
+selected_merged_df_selected <- lagged_data_external_diff[sapply(lagged_data_external_diff, is.numeric)]  #Numeric convertion
+selected_merged_df_selected <-na.omit(selected_merged_df_selected)
+#spearman_cor <- cor(lagged_data[, selected_columns], method = "spearman")
+spearman_cor <- cor(selected_merged_df_selected, method = "spearman")
+# Set negative correlations to zero
+spearman_cor[spearman_cor < 0] <- 0
+
+# Set threshold (e.g., 0.5 for moderate correlation)
+threshold <- 0.1
+# Extract correlations above the threshold
+relevant_correlations <- which(abs(spearman_cor) > threshold & spearman_cor < 1, arr.ind = TRUE)
+# Create an empty list to store relationships
+column_relationships <- vector("list", ncol(selected_merged_df_selected))
+
+
+
+# Loop through each relevant correlation and update the list
+for (i in 1:nrow(relevant_correlations)) {
+  row_index <- relevant_correlations[i, "row"]
+  col_index <- relevant_correlations[i, "col"]
+  # Add the related column to the list for the current column
+  column_relationships[[col_index]] <- c(column_relationships[[col_index]], colnames(selected_merged_df_selected)[row_index])
+}
+# Print the list of relationships
+for (i in 1:length(column_relationships)) {
+  cat("Column", colnames(selected_merged_df_selected)[i], "has relationships:     ", paste(column_relationships[[i]], collapse = ", "), "\n")
+}
+
+#Column Return has relationships:      Return_fd_lag_1, Return_fd_lag_2, temp_fd_lag_2, Load_fd_lag_1, Load_fd_lag_2, Total_Fossil_Output_fd_lag_1, Total_Fossil_Output_fd_lag_2, Nuclear_Output_fd_lag_1, Return_fd_lag_1, Return_fd_lag_2, temp_fd_lag_2, Load_fd_lag_1, Load_fd_lag_2, Total_Fossil_Output_fd_lag_1, Total_Fossil_Output_fd_lag_2, Nuclear_Output_fd_lag_1 
+
+columns_to_select_try <- c("Start.Date" ,"temp_fd_lag_2", "Load_fd_lag_1","Total_Fossil_Output_fd_lag_1", "Nuclear_Output_fd_lag_1","Load_fd_lag_2")
+
+# Select the specified columns from lagged_data
+lagged_data_selected_2 <- lagged_data_external_diff %>% dplyr::select(all_of(columns_to_select_try))
+```
+#Merge 2 selected files for lagged and diff of externals and find again the correlation to sort the file
+```{r}
+
+merged_df_2 <- merge(lagged_data_selected_1,  lagged_data_selected_2, by = "Start.Date" , all = TRUE) 
+merged_df_2$Return_dlag_1 <- dplyr::lag(merged_df_2$Return, 24)
+merged_df_2$Return_lag_10 <- dplyr::lag(merged_df_2$Return, 10)
+merged_df_2$Return_fd_dlag_1 <- dplyr::lag(merged_df_2$returns_fd, 24)
+merged_df_2 <- merged_df_2 %>% dplyr::select(-"returns_fd")
+
+saveRDS(merged_df_2, file = "D:/Dort data science/Case Study/Project 2/merged_df_2_last.rds")
+
+
+
+```
+
+
+
+
+
+
+
+
+
+#Prospective model: Decision tree for model 1 [Taks a]
+
+
+```{r}
+# 
+library(caret)
+library(rpart)
+library(doParallel)
+# Modify the vector to keep data within the specified range
+
+
+# Split the data into training and testing sets
+total_rows <- nrow(data_cleaned)
+train_size <- floor(0.7 * total_rows)
+train_df <- data_cleaned[1:train_size, ]
+test_df <- data_cleaned[(train_size + 1):total_rows, ]
+
+# Remove NA values resulting 
+train_df <- na.omit(train_df)
+test_df <- na.omit(test_df)
+
+
+# Prepare your training and test features and target variables as needed for modeling
+
+x_train <- train_df %>%dplyr::select( -Start.Date)
+
+y_train <- train_df$Return  # Replace with your target variable
+
+x_test <- test_df %>%dplyr::select(  -Start.Date)
+
+y_test <- test_df$Return  # Replace with your target variable
+
+
+
+# Ensure the length of train_data and train_features match
+y_train <- tail(y_train, nrow(x_train))
+y_test <- tail(y_test, nrow(x_test))
+
+
+
+
+library(caret)
+library(doParallel)
+library(rpart)
+library(progress)
+
+
+#Initial DT with high MSFE #msfe 39.12
+control_params <- rpart.control(cp = 0.01, minsplit = 10, maxdepth = 20) #msfe 39.12
+model <- rpart(Return ~ ., data = x_train, control = control_params)
+rpart.plot(model)
+predictions <- predict(model, newdata = x_test)
+actual_values <- y_test
+msfe <- mean((predictions - actual_values)^2)^(1/2)
+print(paste("MSFE:", msfe))
+
+
+
+#Tuning with grid search for better performance
+# Define the grid of hyperparameters for minsplit, maxdepth, minbucket, and cp 
+full_grid <- expand.grid(
+  minsplit = seq(20, 30, by = 1),
+  maxdepth = seq(25, 30, by = 1),
+  minbucket = seq(15, 25, by = 1),
+  cp = c(0.001)
+)
+
+full_grid <- expand.grid(
+   minsplit = seq(5, 50, by = 5),
+  maxdepth = seq(1, 30, by = 10),
+  cp = seq(0.0001, 0.1, by = 5)
+  
+)  # #Tree complexity with day lag low (MSFE 30.7, Rsqured 0.04) (without day lag, "MSFE: 26.84, R-squared: 0.462)
+
+
+# Split the grid into chunks (larger chunks)
+grid_chunks <- split(full_grid, (seq(nrow(full_grid)) - 1) %/% (nrow(full_grid) / 2))
+
+# Register parallel backend
+cl <- makeCluster(detectCores() - 1) # Use one less core than available
+registerDoParallel(cl)
+
+# Define train control for simple cross-validation
+train_control_cv <- trainControl(method = "cv", 
+                                 number = 5, 
+                                 verboseIter = TRUE)
+
+
+# Initialize variables for the best model tracking
+best_model <- NULL
+best_rmse <- Inf
+# Initialize counter
+chunk_counter <- 0
+
+
+
+# Function to run grid search for a chunk
+run_grid_search <- function(grid_chunk, x_train, train_control, x_test, y_test) {
+  best_chunk_model <- NULL
+  best_chunk_rmse <- Inf
+  
+  for (i in 1:nrow(grid_chunk)) {
+    params <- grid_chunk[i, ]
+    
+    set.seed(123)
+    model <- train(
+      Return ~ ., 
+      data = x_train, 
+      method = "rpart", 
+      trControl = train_control, 
+      tuneGrid = expand.grid(cp = params$cp),
+      control = rpart.control(
+        minsplit = params$minsplit,
+        maxdepth = params$maxdepth,
+        minbucket = params$minbucket
+        
+      )
+    )
+    
+    # Make predictions and calculate RMSE
+    predictions <- predict(model, newdata = x_test)
+    rmse <- sqrt(mean((predictions - y_test)^2))
+    
+    # Update the best model if current model is better
+    if (rmse < best_chunk_rmse) {
+      best_chunk_rmse <- rmse
+      best_chunk_model <- model
+    }
+  }
+  
+  # Update and print progress
+  chunk_counter <<- chunk_counter + 1
+  print(paste("Completed chunk", chunk_counter, "out of", length(grid_chunks)))
+  
+  return(list(best_model = best_chunk_model, best_rmse = best_chunk_rmse))
+}
+
+# Run grid search for each chunk in parallel
+results <- foreach(grid_chunk = grid_chunks, .packages = c("caret", "rpart", "dplyr")) %dopar% {
+  run_grid_search(grid_chunk, x_train, train_control_cv, x_test, y_test)
+}
+
+
+# Combine results to find the overall best model
+for (result in results) {
+  if (result$best_rmse < best_rmse) {
+    best_rmse <- result$best_rmse
+    best_model <- result$best_model
+  }
+}
+
+# Stop the cluster
+stopCluster(cl)
+registerDoSEQ()
+
+# Print the best model
+print(best_model)
+final_rpart_model <- best_model$finalModel
+rpart.plot(final_rpart_model)
+
+# Extract the best hyperparameters
+best_params <- best_model$finalModel$control
+# Refit the model on the entire training dataset
+final_model <- rpart(
+  Return ~ ., 
+  data = x_train, 
+  control = rpart.control(
+    cp = best_params$cp,
+    minsplit = best_params$minsplit,
+    maxdepth = best_params$maxdepth,
+    minbucket =best_params$minbucket
+    
+  )
+)
+
+
+# Calculate R-squared  /Goodness of fit, and MSFE
+predictions <- predict(model, newdata = x_test)
+actual_values <- y_test
+msfe <- mean((predictions - actual_values)^2)^(1/2)
+print(paste("MSFE:", msfe))
+rsq <- cor(y_test, predictions)^2
+print(paste("R-squared:", rsq))
+#####################
+
+
+
+
+rpart.plot(final_model)
+
+test_df <- tail(test_df, nrow(x_test))
+plot_data <- data.frame(
+  Date = test_df$Start.Date,
+  Actual = y_test,
+  Predicted = as.numeric(predictions)
+)
+ggplot(plot_data, aes(x = Date)) +
+  geom_line(aes(y = Actual, color = "Actual")) +
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Actual vs Predicted Values", x = "Date", y = "Return") +
+  scale_color_manual(values = c("Actual" = "red", "Predicted" = "blue")) +
+  theme_minimal()
+
+first_week_data <- plot_data %>%
+  filter(format(Date, "%Y-%m-%W") == "2022-02-05")  # Adjust the week number as needed
+
+# Plot the data
+ggplot(first_week_data, aes(x = Date)) +
+  geom_line(aes(y = Actual, color = "Actual")) +
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Actual vs Predicted Values for the 1st Week of February 2022 with DT", x = "Date", y = "Return") +
+  scale_color_manual(values = c("Actual" = "red", "Predicted" = "blue")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+
+
+
+# Decision tree for model 2 [task b]
+
+
+
+```{r}
+
+library(caret)
+library(rpart)
+library(doParallel)
+library(rpart.plot)
+
+
+merged_df_2 <- na.omit(merged_df_2)
+# Split the data into training and testing sets
+total_rows <- nrow(merged_df_2)
+train_size <- floor(0.7 * total_rows)
+train_df <- merged_df_2[1:train_size, ]
+test_df <- merged_df_2[(train_size + 1):total_rows, ]
+
+
+x_train <- train_df %>%dplyr::select(   -Start.Date)
+y_train <- train_df$Return  # Replace with your target variable
+x_test <- test_df %>%dplyr::select(   -Start.Date)
+y_test <- test_df$Return  # Replace with your target variable
+
+x_train <- na.omit(x_train)
+y_train <- na.omit(y_train)
+x_test <- na.omit(x_test)
+y_test <- na.omit(y_test)
+
+
+#Initial DT with high MSFE #msfe 32.12
+control_params <- rpart.control(cp = 0.01, minsplit = 10, maxdepth = 20) #msfe 32
+final_model <- rpart(Return ~ ., data = x_train, control = control_params)
+rpart.plot(final_model)
+predictions <- predict(final_model, newdata = x_test)
+actual_values <- y_test
+msfe <- mean((predictions - actual_values)^2)^(1/2)
+print(paste("MSFE:", msfe))
+
+
+
+# Plot the data
+
+test_df <- tail(test_df, nrow(x_test))
+plot_data <- data.frame(
+  Date = test_df$Start.Date,
+  Actual = y_test,
+  Predicted = as.numeric(predictions)
+)
+ggplot(plot_data, aes(x = Date)) +
+  geom_line(aes(y = Actual, color = "Actual")) +
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Actual vs Predicted Values", x = "Date", y = "Return") +
+  scale_color_manual(values = c("Actual" = "red", "Predicted" = "blue")) +
+  theme_minimal()
+  
+  
+
+# Define the grid of hyperparameters for minsplit, maxdepth, minbucket, and cp
+
+full_grid <- expand.grid(
+  minsplit = seq(8, 12, by = 2),
+  maxdepth = seq(18, 22, by = 2),
+  minbucket = seq(8, 12, by = 2), # Considering minbucket should be related to minsplit
+  cp = c(0.005, 0.01, 0.015)
+)
+
+
+# Split the grid into chunks (larger chunks)
+grid_chunks <- split(full_grid, (seq(nrow(full_grid)) - 1) %/% (nrow(full_grid) / 2))
+# Define train control for simple cross-validation
+train_control_cv <- trainControl(method = "cv",
+                                 number = 5,
+                                 verboseIter = TRUE)
+
+
+# Initialize variables for the best model tracking
+best_model <- NULL
+best_rmse <- Inf
+chunk_counter <- 0
+
+
+
+# Function to run grid search for a chunk
+run_grid_search <- function(grid_chunk, x_train, train_control, x_test, y_test) {
+  best_chunk_model <- NULL
+  best_chunk_rmse <- Inf
+
+  for (i in 1:nrow(grid_chunk)) {
+    params <- grid_chunk[i, ]
+
+    set.seed(123)
+    model <- train(
+      Return ~ .,
+      data = x_train,
+      method = "rpart",
+      trControl = train_control,
+      tuneGrid = expand.grid(cp = params$cp),
+      control = rpart.control(
+        minsplit = params$minsplit,
+        maxdepth = params$maxdepth,
+        minbucket = params$minbucket
+
+      )
+    )
+
+    # Make predictions and calculate RMSE
+    predictions <- predict(model, newdata = x_test)
+    rmse <- sqrt(mean((predictions - y_test)^2))
+
+    # Update the best model if current model is better
+    if (rmse < best_chunk_rmse) {
+      best_chunk_rmse <- rmse
+      best_chunk_model <- model
+    }
+  }
+
+  # Update and print progress
+  chunk_counter <<- chunk_counter + 1
+  print(paste("Completed chunk", chunk_counter, "out of", length(grid_chunks)))
+
+  return(list(best_model = best_chunk_model, best_rmse = best_chunk_rmse))
+}
+
+# Run grid search for each chunk in parallel
+results <- foreach(grid_chunk = grid_chunks, .packages = c("caret", "rpart", "dplyr")) %dopar% {
+  run_grid_search(grid_chunk, x_train, train_control_cv, x_test, y_test)
+}
+
+# Combine results to find the overall best model
+for (result in results) {
+  if (result$best_rmse < best_rmse) {
+    best_rmse <- result$best_rmse
+    best_model <- result$best_model
+  }
+}
+
+
+# Print the best model
+print(best_model)
+final_rpart_model <- best_model$finalModel
+rpart.plot(final_rpart_model)
+
+# Extract the best hyperparameters
+best_params <- best_model$finalModel$control
+# Refit the model on the entire training dataset
+final_model <- rpart(
+  Return ~ .,
+  data = x_train,
+  control = rpart.control(
+    cp = best_params$cp,
+    minsplit = best_params$minsplit,
+    maxdepth = best_params$maxdepth,
+    minbucket =best_params$minbucket
+
+  )
+)
+rpart.plot(final_model)
+
+# Calculate R-squared  /Goodness of fit, and MSFE
+predictions <- predict(final_model, newdata = x_test)
+actual_values <- y_test
+msfe <- mean((predictions - actual_values)^2)^(1/2)
+print(paste("MSFE:", msfe))
+rsq <- cor(y_test, predictions)^2
+print(paste("R-squared:", rsq))
+#####################
+
+
+
+
+
+
+
+
+
+
+```
+
+#Ranking 
+```{r}
+
+importance <- final_model$variable.importance
+#importance <- final_rpart_model$variable.importance
+
+# Convert to a data frame and add rank
+importance_df <- data.frame(Feature = names(importance), Importance = importance)
+importance_df$Rank <- rank(-importance_df$Importance)
+importance_df <- importance_df %>%
+  arrange(Rank)
+
+print(importance_df)
+
+```
+```{r}
+
+# Print the importance dataframe
+print(importance_df)
+
+# Define the rank threshold
+rank_threshold <- 8 # Select features up to rank 5
+
+# Select features based on the rank
+selected_features <- importance_df %>%
+  filter(Rank <= rank_threshold) %>%
+  pull(Feature)
+
+# Create a new dataset with the selected features
+x_train_selected <- x_train %>%
+  dplyr::select(Return, all_of(selected_features))
+
+#Initial DT with high MSFE #msfe 32.12
+control_params <- rpart.control(cp = 0.01, minsplit = 10, maxdepth = 20) #msfe 32
+final_model <- rpart(Return ~ ., data = x_train_selected, control = control_params)
+rpart.plot(final_model)
+
+train_columns <- colnames(x_train_selected)
+x_test_adjusted <- x_test[, train_columns, drop = FALSE]
+predictions <- predict(final_model, newdata = x_test_adjusted)
+actual_values <- y_test
+msfe <- mean((predictions - actual_values)^2)^(1/2)
+print(paste("MSFE:", msfe))
+```
+
+
+
+#Neural net for model 1 (task a)
+#keras_model_sequential(): Initializes a sequential neural network model.
+#layer_dense(): Adds densely connected (fully connected) layers to the model with specified number of units and activation functions.
+#compile(): Configures the model for training with loss function, optimizer, and metrics.
+#Column Return has relationships:      lag_1, lag_2, lag_10, lag_1_fd, lag_2_fd, lag_3_fd, dlag_1, dlag_1_fd 
+```{r}
+
+library(reticulate)
+library(keras)
+library(dplyr)
+library(ggplot2)
+library(tensorflow)
+library(caret)
+library(dplyr)
+library(zoo)
+
+
+
+
+# Split the data into training and testing sets
+total_rows <- nrow(data_cleaned)
+train_size <- floor(0.7 * total_rows)
+train_df <- data_cleaned[1:train_size, ]
+test_df <- data_cleaned[(train_size + 1):total_rows, ]
+
+
+
+# Prepare your training and test features and target variables as needed for modeling
+
+x_train <- train_df %>%dplyr::select(  lag_1,lag_2,lag_10, lag_1_fd,lag_2_fd,lag_3_fd,dlag_1, dlag_1_fd )
+
+y_train <- train_df$Return  # Replace with your target variable
+
+x_test <- test_df %>%dplyr::select(  lag_1,lag_2, lag_10,lag_1_fd,lag_2_fd,lag_3_fd, dlag_1, dlag_1_fd)
+
+y_test <- test_df$Return  # Replace with your target variable
+
+
+# Prepare data for training and testing
+x_train <- as.matrix(x_train)
+y_train <- as.matrix(y_train)
+x_test <- as.matrix(x_test)
+y_test <- as.matrix(y_test)
+
+# Ensure y_train and y_test are aligned with x_train and x_test
+y_train <- tail(y_train, nrow(x_train))
+y_test <- tail(y_test, nrow(x_test))
+
+
+
+
+#Output explaination: (There are a few points with very large residuals, which indicate that the variance of the residuals changes with the predicted values.There are many predicted values clustered around zero, suggesting that the model might not be capturing the variability in the data adequately)
+model <- keras_model_sequential() %>%
+  layer_dense(units = 64, activation = 'relu', input_shape = ncol(x_train),
+              kernel_regularizer = regularizer_l2(0.01)) %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 1, activation = 'linear')   # MSFE 32  
+
+# Define early stopping callback
+early_stopping <- callback_early_stopping(
+  monitor = 'val_loss',    # Metric to monitor (validation loss)
+  patience = 10,           # Number of epochs with no improvement after which training will be stopped
+  restore_best_weights = TRUE   # Restore model weights from the epoch with the best value of the monitored quantity
+)
+
+# Compile the model
+model %>% compile(
+  loss = 'mean_squared_error',
+  optimizer = optimizer_adam(learning_rate = 0.001),
+  metrics = c('mean_absolute_error')
+)
+batch_size <- 10  # Set your desired batch size here
+
+
+history <- model %>% fit(
+  x_train, y_train,
+  epochs = 30,  # Set number of epochs
+  batch_size = batch_size,
+  validation_split = 0.2,  # Validation split if not using separate test set
+  verbose = 1,
+  callbacks = list(early_stopping),  # Early stopping callback
+)
+
+
+# Evaluate MSE on test data
+
+predictions <- model %>% predict(x_test)
+r_squared <- cor(predictions, y_test)^2  # Calculate R-squared on test data
+print(paste("Rsquared:", r_squared))
+msfe <- sqrt(mean((predictions - y_test)^2))  # Calculate MSFE
+print(paste("MSFE:", msfe))
+
+
+#Evaluate model on residual plot
+residuals <- y_test - predictions
+# Create a data frame for plotting
+plot_data <- data.frame(
+  Date = test_df$Start.Date,  # Assuming your test set has the date column
+  Residuals = residuals,
+  Predicted = predictions,
+  Actual = y_test
+)
+
+# Residual Plot
+ggplot(plot_data, aes(x = Predicted, y = Residuals)) +
+  geom_point() +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(title = "Residuals vs Predicted Values", x = "Predicted Values", y = "Residuals") +
+  theme_minimal()
+
+# Q-Q Plot
+qqnorm(residuals)
+qqline(residuals, col = "red")
+
+
+#Evaluate with naive residual
+residuals <- y_test - predictions
+residuals_naive <- diff(y_test)
+# Calculate evaluation metrics
+mse_model <- mean(residuals^2)
+mse_naive <- mean(residuals_naive^2)
+rmse_model <- sqrt(mse_model)
+rmse_naive <- sqrt(mean(residuals_naive^2))
+cat("Model RMSE:", rmse_model, "\n")
+cat("Naive RMSE:", rmse_naive, "\n")
+# Plot predictions vs actual values
+
+test_df <- tail(test_df, nrow(x_test))
+plot_data <- data.frame(
+  Date = test_df$Start.Date,
+  Actual = y_test,
+  Predicted = as.numeric(predictions)
+)
+ggplot(plot_data, aes(x = Date)) +
+  geom_line(aes(y = Actual, color = "Actual")) +
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Actual vs Predicted Values", x = "Date", y = "Return") +
+  scale_color_manual(values = c("Actual" = "red", "Predicted" = "blue")) +
+  theme_minimal()
+
+
+#One month plot for better understanding
+
+one_month_data <- plot_data %>%
+  filter(format(Date, "%Y-%m") == "2022-02")
+# Plot the data
+ggplot(one_month_data, aes(x = Date)) +
+  geom_line(aes(y = Actual, color = "Actual")) +
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Actual vs Predicted Values for January 2022", x = "Date", y = "Return") +
+  scale_color_manual(values = c("Actual" = "red", "Predicted" = "blue")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+
+```
+
+ #Neural net for model 1, with Normalizing  (task a)
+ 
+```{r}
+# install.packages("reticulate")
+# install.packages("keras")
+# install.packages("dplyr")
+# install.packages("ggplot2")
+library(reticulate)
+library(keras)
+library(dplyr)
+library(ggplot2)
+library(tensorflow)
+library(caret)
+library(dplyr)
+library(zoo)
+
+
+
+#   )
+
+# Split the data into training and testing sets
+total_rows <- nrow(data_cleaned)
+train_size <- floor(0.7 * total_rows)
+train_df <- data_cleaned[1:train_size, ]
+test_df <- data_cleaned[(train_size + 1):total_rows, ]
+
+
+# Prepare your training and test features and target variables as needed for modeling
+
+x_train <- train_df %>%dplyr::select(  lag_1,lag_2,lag_10, lag_1_fd,lag_2_fd,lag_3_fd,dlag_1_fd, dlag_1)
+y_train <- train_df$Return  # Replace with your target variable
+x_test <- test_df %>%dplyr::select(  lag_1,lag_2, lag_10,lag_1_fd,lag_2_fd,lag_3_fd,dlag_1_fd, dlag_1 )
+y_test <- test_df$Return  # Replace with your target variable
+
+
+preprocess_obj <- preProcess(x_train, method = "YeoJohnson")
+x_train_normalized <- predict(preprocess_obj, x_train)
+preprocess_obj_test <- preProcess(x_test, method = "YeoJohnson")
+x_test_normalized <- predict(preprocess_obj_test, x_test)
+
+# Prepare data for training and testing
+x_train <- as.matrix(x_train_normalized)
+y_train <- as.matrix(y_train)
+x_test <- as.matrix(x_test_normalized)
+y_test <- as.matrix(y_test)
+
+# Ensure y_train and y_test are aligned with x_train and x_test
+y_train <- tail(y_train, nrow(x_train))
+y_test <- tail(y_test, nrow(x_test))
+
+#Define the neural network model
+model <- keras_model_sequential() %>%
+  layer_dense(units = 64, activation = 'relu',input_shape = ncol(x_train)) %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 1, activation = 'linear')
+
+model <- keras_model_sequential() %>%
+  layer_dense(units = 64, activation = 'relu', input_shape = ncol(x_train),
+              kernel_regularizer = regularizer_l2(0.01)) %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 1, activation = 'linear')   # MSFE 32  
+# Define early stopping callback
+early_stopping <- callback_early_stopping(
+  monitor = 'val_loss',    # Metric to monitor (validation loss)
+  patience = 10,           # Number of epochs with no improvement after which training will be stopped
+  restore_best_weights = TRUE   # Restore model weights from the epoch with the best value of the monitored quantity
+)
+
+# Compile the model
+model %>% compile(
+  loss = 'mean_squared_error',
+  optimizer = optimizer_adam(learning_rate = 0.001),
+  metrics = c('mean_absolute_error')
+)
+batch_size <- 10  # Set your desired batch size here
+
+
+history <- model %>% fit(
+  x_train, y_train,
+  epochs =30,  # Set number of epochs
+  batch_size = batch_size,
+  validation_split = 0.2,  # Validation split if not using separate test set
+  verbose = 1,
+  callbacks = list(early_stopping),  # Early stopping callback
+)
+# Evaluate MSE on test data
+# Calculate R-squared on test data
+predictions <- model %>% predict(x_test)
+r_squared <- cor(predictions, y_test)^2
+r_squared
+
+
+# Calculate MSFE
+msfe <- sqrt(mean((predictions - y_test)^2))
+print(paste("MSFE:", msfe))
+# Plot predictions vs actual values
+test_df <- tail(test_df, nrow(x_test))
+
+plot_data <- data.frame(
+  Date = test_df$Start.Date,
+  Actual = y_test,
+  Predicted = as.numeric(predictions)
+)
+
+ggplot(plot_data, aes(x = Date)) +
+  geom_line(aes(y = Actual, color = "Actual")) +
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Actual vs Predicted Values", x = "Date", y = "Return") +
+  scale_color_manual(values = c("Actual" = "red", "Predicted" = "blue")) +
+  theme_minimal()
+
+
+```
+
+
+
+
+
+#Neural network with external predictors, model 2 (task b)
+```{r}
+library(reticulate)
+library(tensorflow)
+
+use_condaenv("new_tf_environ", required = TRUE)
+tf <- import("tensorflow", convert = FALSE)
+
+py_config()
+py_run_string("import pydot")
+py_run_string("import graphviz")
+reticulate::py_last_error()
+
+
+library(reticulate)
+library(DiagrammeR)
+library(keras)
+library(dplyr)
+library(ggplot2)
+library(tensorflow)
+library(caret)
+library(dplyr)
+library(zoo)
+
+# merged_df_2_last <- readRDS("C:/Users/mukta/Downloads/Project 2-20240614T125847Z-001/Project 2/merged_df_2_last.rds")
+#merged_df_2_NN <- subset(merged_df_2_last)
+
+
+merged_df_2 <- na.omit(merged_df_2)
+
+
+# Split the data into training and testing sets
+total_rows <- nrow(merged_df_2)
+train_size <- floor(0.7 * total_rows)
+train_df <- merged_df_2[1:train_size, ]
+test_df <- merged_df_2[(train_size + 1):total_rows, ]
+
+
+x_train <- train_df %>%dplyr::select(  -Return, -Start.Date)
+y_train <- train_df$Return  # Replace with your target variable
+x_test <- test_df %>%dplyr::select(  -Return, -Start.Date)
+y_test <- test_df$Return  # Replace with your target variable
+
+x_train <- na.omit(x_train)
+y_train <- na.omit(y_train)
+x_test <- na.omit(x_test)
+y_test <- na.omit(y_test)
+
+
+
+
+
+preprocess_obj_train <- preProcess(x_train, method = "YeoJohnson")
+x_train_normalized <- predict(preprocess_obj_train, x_train)
+preprocess_obj_test <- preProcess(x_test, method = "YeoJohnson")
+x_test_normalized <- predict(preprocess_obj_test, x_test)
+
+
+
+
+# Prepare data for training and testing
+x_train <- as.matrix(x_train_normalized)
+y_train <- as.matrix(y_train)
+x_test <- as.matrix(x_test_normalized)
+y_test <- as.matrix(y_test)
+
+
+# Ensure y_train and y_test are aligned with x_train and x_test
+y_train <- tail(y_train, nrow(x_train))
+y_test <- tail(y_test, nrow(x_test))
+
+
+
+#Define the neural network model
+
+model <- keras_model_sequential() %>%
+  layer_dense(units = 64, activation = 'relu', input_shape = ncol(x_train),
+              kernel_regularizer = regularizer_l2(0.01)) %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 1, activation = 'linear')   # MSFE 30
+
+# Define early stopping callback
+early_stopping <- callback_early_stopping(
+  monitor = 'val_loss',    # Metric to monitor (validation loss)
+  patience = 10,           # Number of epochs with no improvement after which training will be stopped
+  restore_best_weights = TRUE   # Restore model weights from the epoch with the best value of the monitored quantity
+)
+
+# Compile the model
+model %>% compile(
+  loss = 'mean_squared_error',
+  optimizer = optimizer_adam(learning_rate = 0.00001),
+  metrics = c('mean_absolute_error')
+)
+
+batch_size <- 10  # Set your desired batch size here
+
+
+history <- model %>% fit(
+  x_train, y_train,
+  epochs = 50,  # Set number of epochs
+  batch_size = batch_size,
+  validation_split = 0.2,  # Validation split if not using separate test set
+  verbose = 1,
+  callbacks = list(early_stopping),  # Early stopping callback
+)
+# Evaluate MSE on test data
+
+
+# ###########Issuesfor prediction 
+# library(reticulate)
+# tf <- import("tensorflow")
+# #tf$constant("Hello, TensorFlow!")
+# 
+# tf$data$experimental$enable_debug_mode()
+# model %>% compile(
+#   optimizer = 'adam',
+#   loss = 'mse',  # Example loss function (mean squared error)
+#   metrics = list('mae'),
+#   run_eagerly = TRUE
+# 
+# )
+# tf$config$run_functions_eagerly(TRUE)
+# ###########Issuesfor prediction 
+
+
+predictions <- model %>% predict(x_test)
+r_squared <- cor(predictions, y_test)^2
+r_squared
+history$params
+
+# Calculate MSFE
+msfe <- sqrt(mean((predictions - y_test)^2))
+print(paste("MSFE:", msfe))
+# Plot predictions vs actual values
+test_df <- tail(test_df, nrow(x_test))
+
+plot(y_test, predictions,
+     xlab = "Actual Values", ylab = "Predicted Values",
+     main = "Actual vs Predicted Values",
+     col = "blue", pch = 19)
+abline(a = 0, b = 1, col = "red")
+
+
+plot_data <- data.frame(
+  Date = test_df$Start.Date,
+  Actual = y_test,
+  Predicted = predictions
+)
+ggplot(plot_data, aes(x = Date)) +
+  geom_line(aes(y = Actual, color = "Actual")) +
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Actual vs Predicted Values", x = "Date", y = "Return") +
+  scale_color_manual(values = c("Actual" = "red", "Predicted" = "blue")) +
+  theme_minimal()
+
+
+one_month_data <- plot_data %>%
+  filter(format(Date, "%Y-%m") == "2022-02")
+# Plot the data
+ggplot(one_month_data, aes(x = Date)) +
+  geom_line(aes(y = Actual, color = "Actual")) +
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Actual vs Predicted Values for January 2022", x = "Date", y = "Return") +
+  scale_color_manual(values = c("Actual" = "red", "Predicted" = "blue")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+first_week_data <- plot_data %>%
+  filter(format(Date, "%Y-%m-%W") == "2022-02-05")  # Adjust the week number as needed
+
+# Plot the data
+ggplot(first_week_data, aes(x = Date)) +
+  geom_line(aes(y = Actual, color = "Actual")) +
+  geom_line(aes(y = Predicted, color = "Predicted")) +
+  labs(title = "Actual vs Predicted Values for the 1st Week of February 2022", x = "Date", y = "Return") +
+  scale_color_manual(values = c("Actual" = "red", "Predicted" = "blue")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+
+#vizulization Model architecture , Ranking (task c)
+```{r}
+
+
+
+library(keras)
+library(reticulate)
+library(visNetwork)
+library(graphViz)
+library(tidyverse)
+library(tidyverse)
+library(DiagrammeR)
+
+#Model architecture
+file_path = "C:/Users/mukta/Downloads/Project 2-20240614T125847Z-001/Project 2/model_deep_plot_last_ex.png"
+keras$utils$plot_model(model, to_file = file_path, show_shapes = TRUE, show_layer_names = TRUE)
+
+#Ranking the variables
+library(DALEX)
+explainer <- explain(model, data = as.matrix(x_train), y = y_train)
+vi <- model_parts(explainer, loss_function = loss_root_mean_square)
+plot(vi)
+
+
+#weigh Visualization per layer
+
+library(DiagrammeR)
+library(DiagrammeRsvg)
+library(rsvg)
+
+
+visualize_nn <- function(input_to_output_weights, variable_names, output_file = NULL) {
+  input_size <- length(variable_names)
+  output_size <- 1  # Single output node
+  
+  # Create nodes for input layer
+  input_nodes <- paste0(
+    "input", 1:input_size, 
+    " [label = \"", variable_names, "\", shape = \"ellipse\", style = \"filled\", fillcolor = \"lightblue\", fontsize = 8]", 
+    collapse = ";\n"
+  )
+  
+  # Create nodes for output layer
+  output_nodes <- "output [label = \"Output\", shape = \"ellipse\", style = \"filled\", fillcolor = \"lightgreen\", fontsize = 10]"
+  
+  # Create edges from input layer to output layer with weights
+  edges <- apply(expand.grid(input = paste0("input", 1:input_size), output = "output"), 1, function(row) {
+    weight <- input_to_output_weights[as.numeric(gsub("input", "", row[1]))]  # Get weight corresponding to the input node
+    paste0(row[1], " -> ", row[2], " [label = \"", round(weight, digits = 2), "\", fontsize = 8]")
+  })
+  
+  # Combine all elements into a graph
+  graph <- paste0(
+    "digraph G {\n",
+    "rankdir=LR;\n",  # Left-to-right layout
+    input_nodes, ";\n",
+    output_nodes, ";\n",
+    paste(edges, collapse = ";\n"), ";\n",
+    "}"
+  )
+  
+  # Print the graph for debugging
+  cat(graph, "\n")
+  
+  # Render the graph
+  graph_viz <- DiagrammeR::grViz(graph)
+  
+  # Export the graph if output_file is provided
+  if (!is.null(output_file)) {
+    # Convert to SVG
+    svg <- DiagrammeRsvg::export_svg(graph_viz)
+    
+    # Write SVG to PNG file
+    rsvg::rsvg_png(charToRaw(svg), file = output_file)
+  }
+  
+  return(graph_viz)
+}
+
+input_to_output_weights <- weights[[1]]  # Assuming weights[[1]] contains input to hidden weights
+variable_names <- colnames(x_train) 
+# Visualize the neural network
+visualize_nn(input_to_output_weights, variable_names, output_file = "C:/Users/mukta/Downloads/Project 2-20240614T125847Z-001/Project 2/model_plot.png")
+
+
+```
+
+
+
