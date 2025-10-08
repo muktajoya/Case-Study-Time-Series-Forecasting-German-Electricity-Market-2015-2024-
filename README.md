@@ -8,7 +8,7 @@ column shows hourly values.
 The Projects and Reports are covering the following 
 
 1. Developed and compared models to forecast hourly electricity load and prices using over nine years of real-world German
-market data, spanning linear methods (AR, OLS) and machine learning algorithms (Random Forests, Regression Trees).
+market data, spanning linear methods (AR, OLS) and machine learning algorithms (Deep Neural Network, Regression Trees).
 
 3. Applied feature engineering, time series decomposition, and rolling-window estimation for dynamic model updates,
 improving predictive accuracy.
